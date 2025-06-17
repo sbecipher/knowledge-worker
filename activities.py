@@ -25,44 +25,52 @@ async def check_api_health() -> None:
     # Heartbeat to indicate liveness
     activity.heartbeat({"status": "healthy"})
 
-@activity.defn(name="fetch_company_articles")
-async def fetch_company_articles(company: str, year: int) -> list[dict]:
+@activity.defn(name="fetch_company_articles_batch")
+async def fetch_company_articles_batch(company: str, year: int) -> list[dict]:
     """
-    Fetches articles for a company and year. Streams FEAM articles per-article via NDJSON.
+    Fetches articles for a company and year. Batch Companies articles per-article via NDJSON.
     """
     # Early cancellation guard
     if activity.is_cancelled():
         raise RuntimeError("fetch_company_articles activity cancelled before start")
-    # Use streaming endpoint for FEAM to allow per-article heartbeats
-    if company.lower() == "feam":
-        url = f"{BASE_URL}/api/v1/companies/feam/{year}/stream"
-        articles: list[dict] = []
-        async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
-            response = await client.stream("GET", url)
-            response.raise_for_status()
-            # Read NDJSON lines
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                try:
-                    article = json.loads(line)
-                except json.JSONDecodeError:
-                    activity.logger.warning("Skipping invalid JSON line in stream: %r", line)
-                    continue
-                # Heartbeat progress
-                activity.heartbeat({"article_title": article.get("title")})
-                # Check for cancellation during processing
-                if activity.is_cancelled():
-                    activity.logger.info("fetch_company_articles activity cancelled during FEAM stream")
-                    break
-                articles.append(article)
-        return articles
-    # Fallback batch fetch for other companies
-    url = f"{BASE_URL}/api/v1/companies/{company}/{year}"
+    url = f"{BASE_URL}/api/v1/companies/{company}/{year}/batch"
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         response = await client.get(url)
         response.raise_for_status()
         return response.json()
+
+@activity.defn(name="fetch_company_articles")
+async def fetch_company_articles(company: str, year: int) -> list[dict]:
+    """
+    Fetches articles for a company and year. Streams Companies articles per-article via NDJSON.
+    """
+    # Early cancellation guard
+    if activity.is_cancelled():
+        raise RuntimeError("fetch_company_articles activity cancelled before start")
+    # Use streaming endpoint for compnaies to allow per-article heartbeats
+
+    url = f"{BASE_URL}/api/v1/companies/{company}/{year}/stream"
+    articles: list[dict] = []
+    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
+        response = await client.stream("GET", url)
+        response.raise_for_status()
+        # Read NDJSON lines
+        async for line in response.aiter_lines():
+            if not line:
+                continue
+            try:
+                article = json.loads(line)
+            except json.JSONDecodeError:
+                activity.logger.warning("Skipping invalid JSON line in stream: %r", line)
+                continue
+            # Heartbeat progress
+            activity.heartbeat({"article_title": article.get("title")})
+            # Check for cancellation during processing
+            if activity.is_cancelled():
+                activity.logger.info("fetch_company_articles activity cancelled during FEAM stream")
+                break
+            articles.append(article)
+    return articles
 
 @activity.defn(name="list_company_articles")
 async def list_company_articles(company: str, year: int) -> list[dict]:
@@ -71,7 +79,7 @@ async def list_company_articles(company: str, year: int) -> list[dict]:
     """
     if activity.is_cancelled():
         raise RuntimeError("list_company_articles activity cancelled before start")
-    url = f"{BASE_URL}/api/v1/companies/{company}/{year}"
+    url = f"{BASE_URL}/api/v1/companies/{company}/{year}/articles"
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         response = await client.get(url)
         response.raise_for_status()
