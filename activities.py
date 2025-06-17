@@ -3,7 +3,6 @@ import json
 import httpx
 from datetime import timedelta
 from temporalio import activity
-from temporalio.common import RetryPolicy
 
 # Base URL of the Knowledge FastAPI application, defaults to localhost
 BASE_URL = os.getenv("KNOWLEDGE_API_URL", "http://localhost:8000").rstrip('/')
@@ -11,15 +10,7 @@ BASE_URL = os.getenv("KNOWLEDGE_API_URL", "http://localhost:8000").rstrip('/')
 HTTP_TIMEOUT = float(os.getenv("HTTP_CLIENT_TIMEOUT", "60"))
 STREAM_TIMEOUT = float(os.getenv("STREAM_CLIENT_TIMEOUT", "600"))
 
-@activity.defn(
-    name="check_api_health",
-    retry_policy=RetryPolicy(
-        initial_interval=timedelta(seconds=5),
-        backoff_coefficient=2.0,
-        maximum_interval=timedelta(seconds=30),
-        maximum_attempts=3,
-    ),
-)
+@activity.defn(name="check_api_health")
 async def check_api_health() -> None:
     """
     Health check against the Knowledge API health endpoint. Raises on non-200.
@@ -34,15 +25,7 @@ async def check_api_health() -> None:
     # Heartbeat to indicate liveness
     activity.heartbeat({"status": "healthy"})
 
-@activity.defn(
-    name="fetch_company_articles",
-    retry_policy=RetryPolicy(
-        initial_interval=timedelta(seconds=10),
-        backoff_coefficient=2.0,
-        maximum_interval=timedelta(seconds=120),
-        maximum_attempts=5,
-    ),
-)
+@activity.defn(name="fetch_company_articles")
 async def fetch_company_articles(company: str, year: int) -> list[dict]:
     """
     Fetches articles for a company and year. Streams FEAM articles per-article via NDJSON.
@@ -81,15 +64,7 @@ async def fetch_company_articles(company: str, year: int) -> list[dict]:
         response.raise_for_status()
         return response.json()
 
-@activity.defn(
-    name="list_company_articles",
-    retry_policy=RetryPolicy(
-        initial_interval=timedelta(seconds=5),
-        backoff_coefficient=2.0,
-        maximum_interval=timedelta(seconds=30),
-        maximum_attempts=3,
-    ),
-)
+@activity.defn(name="list_company_articles")
 async def list_company_articles(company: str, year: int) -> list[dict]:
     """
     Lists all articles for a given company and year (metadata only).
@@ -104,15 +79,7 @@ async def list_company_articles(company: str, year: int) -> list[dict]:
     activity.heartbeat({"count": len(articles)})
     return articles
 
-@activity.defn(
-    name="process_company_article",
-    retry_policy=RetryPolicy(
-        initial_interval=timedelta(seconds=10),
-        backoff_coefficient=2.0,
-        maximum_interval=timedelta(seconds=120),
-        maximum_attempts=3,
-    ),
-)
+@activity.defn(name="process_company_article")
 async def process_company_article(company: str, year: int, article: dict) -> dict:
     """
     Processes a single article. Currently a no-op stub that returns the metadata.
