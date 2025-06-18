@@ -1,6 +1,7 @@
 import os
 import json
 import httpx
+from urllib.parse import urlencode
 from datetime import timedelta
 from temporalio import activity
 
@@ -33,13 +34,14 @@ async def fetch_company_articles_batch(company: str, year: int) -> list[dict]:
     # Early cancellation guard
     if activity.is_cancelled():
         raise RuntimeError("fetch_company_articles activity cancelled before start")
-    url = f"{BASE_URL}/api/v1/companies/{company}/{year}/batch"
+    endpoint = f"/api/v1/companies/{company}/{year}/batch"
+    url = f"{BASE_URL}{endpoint}"
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         response = await client.get(url)
         response.raise_for_status()
         return response.json()
 
-@activity.defn(name="fetch_company_articles")
+@activity.defn(name="fetch_company_articles_stream")
 async def fetch_company_articles(company: str, year: int) -> list[dict]:
     """
     Fetches articles for a company and year. Streams Companies articles per-article via NDJSON.
@@ -49,7 +51,8 @@ async def fetch_company_articles(company: str, year: int) -> list[dict]:
         raise RuntimeError("fetch_company_articles activity cancelled before start")
     # Use streaming endpoint for compnaies to allow per-article heartbeats
 
-    url = f"{BASE_URL}/api/v1/companies/{company}/{year}/stream"
+    endpoint = f"/api/v1/companies/{company}/{year}/stream"
+    url = f"{BASE_URL}{endpoint}"
     articles: list[dict] = []
     async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
         response = await client.stream("GET", url)
@@ -79,7 +82,8 @@ async def list_company_articles(company: str, year: int) -> list[dict]:
     """
     if activity.is_cancelled():
         raise RuntimeError("list_company_articles activity cancelled before start")
-    url = f"{BASE_URL}/api/v1/companies/{company}/{year}/articles"
+    endpoint = f"/api/v1/companies/{company}/{year}/articles"
+    url = f"{BASE_URL}{endpoint}"
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         response = await client.get(url)
         response.raise_for_status()
@@ -96,6 +100,7 @@ async def process_company_article(company: str, year: int, article: dict) -> dic
         raise RuntimeError("process_company_article activity cancelled")
     activity.heartbeat({"processing_title": article.get("title")})
     # Perform simple validation of the article URL via HTTP HEAD/GET
+    title = article.get("title")
     url = article.get("url")
     validated = False
     content_length = None
@@ -105,27 +110,27 @@ async def process_company_article(company: str, year: int, article: dict) -> dic
     else:
         try:
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True) as client:
-                # Try HEAD request first to minimize payload
-                resp = await client.head(url)
-                if resp.status_code >= 400:
-                    # Fallback to GET if HEAD not allowed
-                    resp = await client.get(url)
-                resp.raise_for_status()
+                url = f"{BASE_URL}" + f"/api/v1/companies/{company}/{year}/article"
+                params = urlencode({"title": title, "url": url})
+                full_url = f"{url}?{params}"
+                response = await client.get(full_url)  # Ensure the URL is reachable
+                response.raise_for_status()
                 validated = True
                 # Capture content length if provided
-                cl = resp.headers.get("content-length")
+                cl = response.headers.get("content-length")
                 content_length = int(cl) if cl and cl.isdigit() else None
+                activity.logger.info(
+                    f"Article {title} ({url}) validated successfully. "
+                    f"Content-Length: {content_length}, Knowledge API URL: {full_url}"
+                )
         except Exception as e:
             error_msg = str(e)
             activity.logger.error(
                 f"Validation failed for URL {url}: {e}", exc_info=True
             )
-    # Build result with validation metadata
-    result = dict(article)
-    result["validated"] = validated
-    result["content_length"] = content_length
+    response = response.json()
     if error_msg:
-        result["validation_error"] = error_msg
+        response["validation_error"] = error_msg
     # Heartbeat final status
     activity.heartbeat({"validated": validated})
-    return result
+    return response
