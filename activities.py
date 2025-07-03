@@ -101,17 +101,17 @@ async def process_company_article(company: str, year: int, article: dict) -> dic
     activity.heartbeat({"processing_title": article.get("title")})
     # Perform simple validation of the article URL via HTTP HEAD/GET
     title = article.get("title")
-    url = article.get("url")
+    article_url = article.get("url")
     validated = False
     content_length = None
     error_msg = None
-    if not url:
+    if not article_url:
         error_msg = "No URL provided in article metadata"
     else:
         try:
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True) as client:
                 url = f"{BASE_URL}" + f"/api/v1/companies/{company}/{year}/article"
-                params = urlencode({"title": title, "url": url})
+                params = urlencode({"title": title, "url": article_url})
                 full_url = f"{url}?{params}"
                 response = await client.get(full_url)  # Ensure the URL is reachable
                 response.raise_for_status()
