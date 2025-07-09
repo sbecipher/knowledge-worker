@@ -26,9 +26,10 @@ pip install -r requirements.txt
 
 ## Running a Local Temporal Server
 
-Start a local Temporal server using Docker:
+Start a local Temporal server:
 
 ```bash
+temporal server start-dev
 docker run --rm -d -p 7233:7233 temporalio/auto-setup:latest
 ```
 
@@ -62,6 +63,7 @@ You can also use `current` to specify the current year:
 
 ```bash
 python -m temporal_app.client --years current --schedule once
+
 ```
 
 By default, companies `aa,amr,feam` are used. To specify different companies:
