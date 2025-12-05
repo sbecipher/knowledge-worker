@@ -1,1 +1,1 @@
-"""Temporal Scheduling App for Companies Knowledge Data API"""
+"""Temporal pipeline for Marketio data (metadata, fundamentals, intraday)"""

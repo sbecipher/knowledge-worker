@@ -1,124 +1,70 @@
-# Temporal Knowledge Scheduling App
+# Marketio Temporal Pipeline
 
-Temporal Python application that schedules and executes workflows to fetch articles from the Companies Knowledge Data API.
+Temporal Python worker that orchestrates Marketio API pulls (metadata, fundamentals, intraday) and writes artifacts to GCS in a hierarchical layout per instrument.
 
 ## Prerequisites
+- Python 3.9+
+- Temporal server (e.g., `temporal server start-dev`)
+- Marketio API running (e.g., `uvicorn app.main:app --reload`)
+- GCS bucket + service account key for uploads
 
-- Python 3.9 or higher
-- Docker (for running a local Temporal server)
-- Companies Knowledge Data API running (default: http://localhost:8000; see `knowledge` app)
-
-## Installation
-
+## Install
 ```bash
-# Clone the repository and navigate to the temporal_app folder
-git clone <repo-url>
-cd <repo-folder>/temporal_app
-
-# (Optional) Create and activate a virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install --upgrade pip
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Running a Local Temporal Server
-
-Start a local Temporal server:
-
+## Config (env)
 ```bash
-temporal server start-dev
-docker run --rm -d -p 7233:7233 temporalio/auto-setup:latest
-```
-
-## Configuration
-
-Configure the Companies Knowledge API and Temporal server via environment variables:
-
-```bash
-export KNOWLEDGE_API_URL=http://localhost:8000
+export MARKETIO_API_URL=http://localhost:8000
+export GCS_BUCKET=sbecipher-intelligence
+export GCS_PREFIX=dev            # optional
+export INSTRUMENT=ssga-xme
+export MODEL_VERSION=1125v
+export TEMP_DIR=tmp
+export UPLOAD_ENABLED=true
+export GCS_SERVICE_ACCOUNT_KEY_PATH=/path/to/key.json
 export TEMPORAL_ADDRESS=localhost:7233
-export TEMPORAL_TASK_QUEUE=knowledge-task-queue
+export TEMPORAL_TASK_QUEUE=market-data-task-queue
 ```
 
-## Running the Worker
+## GCS layout (hierarchical)
+- Metadata: `prod/{instrument}/models/companies_{model_version}.json`
+- Fundamentals:  
+  - Raw: `source/{instrument}/fundamentals/{TICKER}/{start}_{end}.json`  
+  - Stage: `stage/{instrument}/fundamentals/{TICKER}/{start}_{end}.json`  
+  - Prod: `prod/{instrument}/fundamentals/{TICKER}/{start}_{end}.json`  
+- Intraday:  
+  - Raw: `source/{instrument}/intraday/{TICKER}/{freq}/{start}_{end}.json`  
+  - Prod: `prod/{instrument}/intraday/{TICKER}/{freq}/{start}_{end}.json`
 
+Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Stage is required for fundamentals prod.
+
+## Run the worker
 ```bash
-python -m temporal_app.worker
+python worker.py
 ```
 
-## Starting a Workflow
-
+## Start a workflow
 ```bash
-# Recurring: quarterly schedule
-python -m temporal_app.client --years 2021,2022 --schedule quarterly
-
-# One-time run
-python -m temporal_app.client --years 2021,2022 --schedule once
+python client.py \
+  --tickers AA,NUE \
+  --start-date 2020-01-01 \
+  --end-date 2020-12-31 \
+  --intraday-frequency daily \
+  --fundamentals-mode prod \
+  --intraday-mode prod
 ```
 
-You can also use `current` to specify the current year:
+Modes:
+- Fundamentals: `raw` (source only), `stage` (processed), `prod` (stage → prod)
+- Intraday: `raw` (source), `prod` (raw → prod)
 
-```bash
-python -m temporal_app.client --years current --schedule once
-
-```
-
-By default, companies `aa,amr,feam` are used. To specify different companies:
-
-```bash
-python -m temporal_app.client --companies aa,amr --years 2021 --schedule weekly
-```
-
-Supported schedules: `once`, `weekly`, `four_weeks` (approximate monthly), `quarterly`, `annually`.
-
-## Project Structure
-
-```
-temporal_app/
-├── activities.py         # Task implementations: health check, list & process articles
-├── workflows.py          # Orchestrates list vs process flow in KnowledgeWorkflow
-├── client.py             # CLI for starting workflows (once or cron)
-├── worker.py             # Worker that polls the task queue and executes activities
-├── requirements.txt      # Python dependencies
-└── README.md             # This file
-```
-
-## Activities
-The app defines three core activities:
-
-- **check_api_health**
-  - Pings the API `/health` endpoint to verify service availability.
-  - Configured with an exponential backoff retry policy and emits a heartbeat on success.
-
-- **list_company_articles**
-  - Fetches article metadata for a given company and year from `/api/v1/companies/{company}/{year}`.
-  - Returns a list of article dicts. Heartbeats with the total count.
-  - Retries on transient failures.
-
-- **process_company_article**
-  - Validates a single article by performing an HTTP HEAD (fallback to GET) on the article URL.
-  - Records `validated` (bool), `content_length` (if provided), and any `validation_error`.
-  - Emits a heartbeat per article and retries on transient errors.
-
-## Workflow: KnowledgeWorkflow
-
-The `KnowledgeWorkflow` coordinates all activities:
-
-1. **Health Check**: Runs `check_api_health` before any fetches to ensure the API is up.
-2. **List Phase**: For each company/year, executes `list_company_articles` to collect metadata.
-3. **Process Phase**: Fans out `process_company_article` for each metadata entry in parallel (via `asyncio.gather`).
-4. **Aggregation**: Collects and returns a mapping of `"{company}_{year}"` to the list of processed article metadata.
-
-With this split, you get:
-- Fine-grained retries and backoff per activity.
-- Heartbeats at both list and per-article levels for liveness.
-- Cancellation support at every step.
-- Parallel processing of articles for speed and throughput.
-
-## Requirements
-
-- temporalio>=1.0.0
-- httpx
+## What the workflow does
+- Health check `/health`
+- Metadata → write/upload companies file
+- Per ticker:
+  - Fundamentals path: raw → stage → prod (from staged data)
+  - Intraday path: raw → prod
+- Uploads JSON artifacts with metadata in GCS object metadata (instrument, layer, ticker, window, run_id).

@@ -1,136 +1,239 @@
-import os
-import json
+import asyncio
+import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import httpx
-from urllib.parse import urlencode
-from datetime import timedelta
 from temporalio import activity
 
-# Base URL of the Knowledge FastAPI application, defaults to localhost
-BASE_URL = os.getenv("KNOWLEDGE_API_URL", "http://localhost:8000").rstrip('/')
-# Configurable timeouts (in seconds)
-HTTP_TIMEOUT = float(os.getenv("HTTP_CLIENT_TIMEOUT", "60"))
-STREAM_TIMEOUT = float(os.getenv("STREAM_CLIENT_TIMEOUT", "600"))
+from config import load_settings
+from storage_utils import GCSUploader, build_object_path, ensure_dir, format_date, write_json
 
-@activity.defn(name="check_api_health")
-async def check_api_health() -> None:
+logger = logging.getLogger(__name__)
+SETTINGS = load_settings()
+UPLOADER = GCSUploader(
+    bucket=SETTINGS.gcs_bucket,
+    service_account_key_path=SETTINGS.gcs_service_account_key_path,
+    enabled=SETTINGS.upload_enabled,
+)
+
+
+def _make_client(stream: bool = False) -> httpx.AsyncClient:
+    timeout = SETTINGS.http_stream_timeout if stream else SETTINGS.http_timeout
+    return httpx.AsyncClient(timeout=timeout)
+
+
+def _temp_path(object_path: str) -> Path:
+    path = Path(SETTINGS.temp_dir) / object_path
+    ensure_dir(path.parent)
+    return path
+
+
+def _metadata_base(layer: str, dataset: str, ticker: Optional[str], start: Optional[str], end: Optional[str], freq: Optional[str]) -> Dict[str, str]:
+    meta = {
+        "layer": layer,
+        "dataset": dataset,
+        "instrument": SETTINGS.instrument,
+        "model_version": SETTINGS.model_version,
+        "run_id": SETTINGS.run_id,
+        "source": "marketio-api",
+    }
+    if ticker:
+        meta["ticker"] = ticker.upper()
+    if start:
+        meta["start_date"] = format_date(start)
+    if end:
+        meta["end_date"] = format_date(end)
+    if freq:
+        meta["frequency"] = freq.lower()
+    return meta
+
+
+async def _post_json(endpoint: str, payload: dict) -> Any:
+    url = f"{SETTINGS.marketio_api_url}{endpoint}"
+    async with _make_client() as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+
+@activity.defn(name="check_marketio_health")
+async def check_marketio_health() -> None:
     """
-    Health check against the Knowledge API health endpoint. Raises on non-200.
+    Health check against Marketio API.
     """
-    # Cancellation guard
     if activity.is_cancelled():
-        raise RuntimeError("check_api_health activity cancelled")
-    url = f"{BASE_URL}/health"
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-    # Heartbeat to indicate liveness
+        raise RuntimeError("check_marketio_health cancelled")
+    url = f"{SETTINGS.marketio_api_url}/health"
+    async with _make_client() as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
     activity.heartbeat({"status": "healthy"})
 
-@activity.defn(name="fetch_company_articles_batch")
-async def fetch_company_articles_batch(company: str, year: int) -> list[dict]:
-    """
-    Fetches articles for a company and year. Batch Companies articles per-article via NDJSON.
-    """
-    # Early cancellation guard
-    if activity.is_cancelled():
-        raise RuntimeError("fetch_company_articles activity cancelled before start")
-    endpoint = f"/api/v1/companies/{company}/{year}/batch"
-    url = f"{BASE_URL}{endpoint}"
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        return response.json()
 
-@activity.defn(name="fetch_company_articles_stream")
-async def fetch_company_articles(company: str, year: int) -> list[dict]:
+@activity.defn(name="fetch_companies_metadata")
+async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[str, Any]:
     """
-    Fetches articles for a company and year. Streams Companies articles per-article via NDJSON.
-    """
-    # Early cancellation guard
-    if activity.is_cancelled():
-        raise RuntimeError("fetch_company_articles activity cancelled before start")
-    # Use streaming endpoint for compnaies to allow per-article heartbeats
-
-    endpoint = f"/api/v1/companies/{company}/{year}/stream"
-    url = f"{BASE_URL}{endpoint}"
-    articles: list[dict] = []
-    async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
-        response = await client.stream("GET", url)
-        response.raise_for_status()
-        # Read NDJSON lines
-        async for line in response.aiter_lines():
-            if not line:
-                continue
-            try:
-                article = json.loads(line)
-            except json.JSONDecodeError:
-                activity.logger.warning("Skipping invalid JSON line in stream: %r", line)
-                continue
-            # Heartbeat progress
-            activity.heartbeat({"article_title": article.get("title")})
-            # Check for cancellation during processing
-            if activity.is_cancelled():
-                activity.logger.info("fetch_company_articles activity cancelled during FEAM stream")
-                break
-            articles.append(article)
-    return articles
-
-@activity.defn(name="list_company_articles")
-async def list_company_articles(company: str, year: int) -> list[dict]:
-    """
-    Lists all articles for a given company and year (metadata only).
+    Fetch metadata and upload to prod/{instrument}/models/companies_{model_version}.json.
     """
     if activity.is_cancelled():
-        raise RuntimeError("list_company_articles activity cancelled before start")
-    endpoint = f"/api/v1/companies/{company}/{year}/articles"
-    url = f"{BASE_URL}{endpoint}"
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        articles = response.json()
-    activity.heartbeat({"count": len(articles)})
-    return articles
+        raise RuntimeError("fetch_companies_metadata cancelled")
+    payload: Dict[str, Any] = {}
+    if tickers:
+        payload["tickers"] = tickers
 
-@activity.defn(name="process_company_article")
-async def process_company_article(company: str, year: int, article: dict) -> dict:
+    data = await _post_json("/api/v2/companies/metadata", payload)
+    activity.heartbeat({"count": len(data)})
+
+    object_path = build_object_path(
+        layer="prod",
+        instrument=SETTINGS.instrument,
+        dataset="models",
+        model_version=SETTINGS.model_version,
+        prefix=SETTINGS.gcs_prefix,
+    )
+    local_path = _temp_path(object_path)
+    write_json(local_path, data)
+    metadata = _metadata_base("prod", "models", None, None, None, None)
+    uri = UPLOADER.upload_file(local_path, object_path, metadata=metadata)
+
+    return {"uri": uri, "object_path": object_path, "record_count": len(data)}
+
+
+def _save_artifacts(
+    artifacts: List[dict],
+    layer: str,
+    dataset: str,
+    extra_meta: Optional[Dict[str, str]] = None,
+    freq: Optional[str] = None,
+) -> List[dict]:
+    summaries: List[dict] = []
+    for artifact in artifacts:
+        ticker = artifact.get("ticker") or ""
+        start_date = artifact.get("start_date")
+        end_date = artifact.get("end_date")
+        object_path = build_object_path(
+            layer=layer,
+            instrument=SETTINGS.instrument,
+            dataset=dataset,
+            ticker=ticker,
+            freq=freq or artifact.get("frequency"),
+            start_date=start_date,
+            end_date=end_date,
+            prefix=SETTINGS.gcs_prefix,
+        )
+        local_path = _temp_path(object_path)
+        write_json(local_path, artifact)
+        meta = _metadata_base(layer, dataset, ticker, start_date, end_date, freq or artifact.get("frequency"))
+        if extra_meta:
+            meta.update(extra_meta)
+        if artifact.get("cik"):
+            meta["cik"] = artifact["cik"]
+        company_id = artifact.get("company_id") or artifact.get("id")
+        if company_id:
+            meta["company_id"] = company_id
+        identifier = artifact.get("identifier")
+        if identifier:
+            meta["identifier"] = identifier
+        uri = UPLOADER.upload_file(local_path, object_path, metadata=meta)
+        summaries.append(
+            {
+                "ticker": ticker,
+                "start_date": start_date,
+                "end_date": end_date,
+                "frequency": freq or artifact.get("frequency"),
+                "object_path": object_path,
+                "uri": uri,
+                "record_count": len(artifact.get("data", [])),
+            }
+        )
+    return summaries
+
+
+@activity.defn(name="fetch_fundamentals_raw")
+async def fetch_fundamentals_raw(tickers: List[str], start_date: str, end_date: str) -> List[dict]:
+    payload = {
+        "tickers": tickers,
+        "start_date": start_date,
+        "end_date": end_date,
+        "collect": True,
+    }
+    data = await _post_json("/api/v2/companies/fundamentals", payload)
+    activity.heartbeat({"count": len(data)})
+    return _save_artifacts(data, layer="source", dataset="fundamentals")
+
+
+@activity.defn(name="fetch_fundamentals_stage")
+async def fetch_fundamentals_stage(tickers: List[str], start_date: str, end_date: str) -> List[dict]:
+    payload = {
+        "tickers": tickers,
+        "start_date": start_date,
+        "end_date": end_date,
+        "collect": True,
+    }
+    data = await _post_json("/api/v2/companies/fundamentals/processed", payload)
+    activity.heartbeat({"count": len(data)})
+    return _save_artifacts(data, layer="stage", dataset="fundamentals")
+
+
+@activity.defn(name="fetch_fundamentals_prod")
+async def fetch_fundamentals_prod(staged_artifacts: List[dict]) -> List[dict]:
     """
-    Processes a single article. Currently a no-op stub that returns the metadata.
+    Build production fundamentals from staged artifacts and upload.
     """
-    if activity.is_cancelled():
-        raise RuntimeError("process_company_article activity cancelled")
-    activity.heartbeat({"processing_title": article.get("title")})
-    # Perform simple validation of the article URL via HTTP HEAD/GET
-    title = article.get("title")
-    article_url = article.get("url")
-    validated = False
-    content_length = None
-    error_msg = None
-    if not article_url:
-        error_msg = "No URL provided in article metadata"
-    else:
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True) as client:
-                url = f"{BASE_URL}" + f"/api/v1/companies/{company}/{year}/article"
-                params = urlencode({"title": title, "url": article_url})
-                full_url = f"{url}?{params}"
-                response = await client.get(full_url)  # Ensure the URL is reachable
-                response.raise_for_status()
-                validated = True
-                # Capture content length if provided
-                cl = response.headers.get("content-length")
-                content_length = int(cl) if cl and cl.isdigit() else None
-                activity.logger.info(
-                    f"Article {title} ({url}) validated successfully. "
-                    f"Content-Length: {content_length}, Knowledge API URL: {full_url}"
-                )
-        except Exception as e:
-            error_msg = str(e)
-            activity.logger.error(
-                f"Validation failed for URL {url}: {e}", exc_info=True
-            )
-    response = response.json()
-    if error_msg:
-        response["validation_error"] = error_msg
-    # Heartbeat final status
-    activity.heartbeat({"validated": validated})
-    return response
+    if not staged_artifacts:
+        raise ValueError("No staged fundamentals provided for production step")
+
+    results: List[dict] = []
+    for artifact in staged_artifacts:
+        ticker = artifact.get("ticker")
+        start_date = artifact.get("start_date")
+        end_date = artifact.get("end_date")
+        payload = {
+            "tickers": [ticker],
+            "start_date": start_date,
+            "end_date": end_date,
+            "collect": False,
+            "data": artifact.get("data", []),
+        }
+        data = await _post_json("/api/v2/companies/fundamentals/production", payload)
+        activity.heartbeat({"ticker": ticker, "count": len(data)})
+        results.extend(data)
+    return _save_artifacts(results, layer="prod", dataset="fundamentals")
+
+
+@activity.defn(name="fetch_intraday_raw")
+async def fetch_intraday_raw(tickers: List[str], start_date: str, end_date: str, frequency: str) -> List[dict]:
+    payload = {
+        "tickers": tickers,
+        "start_date": start_date,
+        "end_date": end_date,
+        "frequency": frequency,
+        "collect": True,
+    }
+    data = await _post_json("/api/v2/companies/intraday", payload)
+    activity.heartbeat({"count": len(data)})
+    return _save_artifacts(data, layer="source", dataset="intraday", freq=frequency)
+
+
+@activity.defn(name="fetch_intraday_prod")
+async def fetch_intraday_prod(raw_artifacts: List[dict], frequency: str) -> List[dict]:
+    if not raw_artifacts:
+        raise ValueError("No raw intraday artifacts provided for production step")
+    results: List[dict] = []
+    for artifact in raw_artifacts:
+        ticker = artifact.get("ticker")
+        start_date = artifact.get("start_date")
+        end_date = artifact.get("end_date")
+        payload = {
+            "tickers": [ticker],
+            "start_date": start_date,
+            "end_date": end_date,
+            "frequency": frequency,
+            "collect": False,
+            "data": artifact.get("data", []),
+        }
+        data = await _post_json("/api/v2/companies/intraday/production", payload)
+        activity.heartbeat({"ticker": ticker, "count": len(data)})
+        results.extend(data)
+    return _save_artifacts(results, layer="prod", dataset="intraday", freq=frequency)

@@ -1,0 +1,122 @@
+import json
+import logging
+import os
+from pathlib import Path, PurePosixPath
+from typing import Any, Dict, Optional
+
+try:
+    from google.cloud import storage
+except ImportError:  # pragma: no cover - handled at runtime if dependency missing
+    storage = None  # type: ignore
+
+logger = logging.getLogger(__name__)
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def format_date(value: Any) -> str:
+    """
+    Normalize date-like values to YYYYMMDD strings for deterministic paths.
+    """
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y%m%d")  # type: ignore[attr-defined]
+    if isinstance(value, str):
+        # Accept YYYY-MM-DD or YYYYMMDD
+        parts = value.replace("-", "")
+        if len(parts) == 8:
+            return parts
+    raise ValueError(f"Unsupported date format: {value}")
+
+
+def build_object_path(
+    layer: str,
+    instrument: str,
+    dataset: str,
+    ticker: Optional[str] = None,
+    freq: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    model_version: Optional[str] = None,
+    suffix: Optional[str] = None,
+    prefix: str = "",
+) -> str:
+    """
+    Build a hierarchical GCS path using normalized components.
+    """
+    parts = [p for p in [prefix, layer, instrument, dataset] if p]
+
+    if dataset == "models":
+        if not model_version:
+            raise ValueError("model_version required for models path")
+        filename = f"companies_{model_version}.json"
+        parts.append(filename)
+        return str(PurePosixPath(*parts))
+
+    if ticker:
+        parts.append(ticker.upper())
+    if freq:
+        parts.append(freq.lower())
+    filename_parts = []
+    if ticker and dataset != "models":
+        filename_parts.append(ticker.upper())
+    if freq:
+        filename_parts.append(freq.lower())
+    if start_date:
+        filename_parts.append(format_date(start_date))
+    if end_date:
+        filename_parts.append(format_date(end_date))
+    filename = "_".join(filename_parts) + ".json"
+    parts.append(filename)
+    return str(PurePosixPath(*parts))
+
+
+class GCSUploader:
+    """
+    Thin wrapper around google-cloud-storage with optional dry-run.
+    """
+
+    def __init__(
+        self,
+        bucket: Optional[str],
+        service_account_key_path: Optional[str],
+        enabled: bool = True,
+    ):
+        self.bucket_name = bucket
+        self.enabled = enabled and bool(bucket)
+        self._client = None
+        if self.enabled:
+            if storage is None:
+                raise RuntimeError("google-cloud-storage is required for uploads")
+            if service_account_key_path:
+                self._client = storage.Client.from_service_account_json(service_account_key_path)
+            else:
+                self._client = storage.Client()
+            self._bucket = self._client.bucket(bucket)
+        else:
+            self._bucket = None
+
+    def upload_file(self, local_path: Path, object_path: str, metadata: Optional[Dict[str, str]] = None) -> str:
+        """
+        Upload a JSON file to GCS, returning the gs:// URI. If disabled, returns a file URI.
+        """
+        if not self.enabled or not self._bucket:
+            logger.info("Uploads disabled; skipping upload for %s", local_path)
+            return f"file://{local_path}"
+
+        blob = self._bucket.blob(object_path)
+        if metadata:
+            blob.metadata = metadata
+        blob.content_type = "application/json"
+        blob.upload_from_filename(str(local_path))
+        uri = f"gs://{self.bucket_name}/{object_path}"
+        logger.info("Uploaded %s to %s", local_path, uri)
+        return uri
+
+
+def write_json(path: Path, payload: Any) -> Path:
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=False)
+    return path

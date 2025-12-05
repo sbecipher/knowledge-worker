@@ -1,116 +1,86 @@
-import os
 import argparse
 import asyncio
-import sys
-
-import httpx
 from datetime import datetime
+from typing import List
 
 from temporalio.client import Client
-from temporal_app.workflows import KnowledgeWorkflow
 
-# Cron schedule expressions for supported intervals
-CRON_SCHEDULES = {
-    "weekly": "0 9 * * 1",                  # Every Monday at 9 AM
-    "four_weeks": "0 9 1 * *",              # Approximate monthly: 1st of each month at 9 AM
-    "quarterly": "0 9 1 1,4,7,10 *",        # Jan 1, Apr 1, Jul 1, Oct 1 at 9 AM
-    "annually": "0 9 1 1 *"                 # Jan 1 at 9 AM
-}
-# Supported schedule options including one-time run
-SCHEDULE_OPTIONS = ["once"] + list(CRON_SCHEDULES.keys())
+from config import load_settings
+from workflows import MarketDataWorkflow
 
-async def main():
-    parser = argparse.ArgumentParser(
-        description="Start KnowledgeWorkflow with a one-time or cron schedule"
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Start MarketDataWorkflow with Marketio API")
+    parser.add_argument("--tickers", type=str, required=True, help="Comma-separated tickers, e.g., AA,NUE")
+    parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end-date", type=str, required=True, help="End date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--intraday-frequency",
+        type=str,
+        default="daily",
+        help="Intraday frequency (daily, weekly, monthly)",
     )
     parser.add_argument(
-        "--companies",
+        "--fundamentals-mode",
         type=str,
-        default="aa,amr,feam",
-        help="Comma-separated company codes (aa, amr, feam)",
+        choices=["raw", "stage", "prod"],
+        default="prod",
+        help="Fundamentals pipeline depth",
     )
     parser.add_argument(
-        "--years",
+        "--intraday-mode",
         type=str,
-        required=True,
-        help="Comma-separated list of years or 'current', e.g. 2021,2022,current",
-    )
-    parser.add_argument(
-        "--schedule",
-        type=str,
-        choices=SCHEDULE_OPTIONS,
-        required=True,
-        help=f"Schedule interval: {', '.join(SCHEDULE_OPTIONS)}",
+        choices=["raw", "prod"],
+        default="prod",
+        help="Intraday pipeline depth",
     )
     parser.add_argument(
         "--workflow-id",
         type=str,
         default=None,
-        help="Unique workflow ID (defaults to knowledge_{schedule})",
+        help="Workflow ID (defaults to market_data_{timestamp})",
     )
     parser.add_argument(
         "--task-queue",
         type=str,
-        default=os.getenv("TEMPORAL_TASK_QUEUE", "knowledge-task-queue"),
-        help="Task queue for the workflow",
+        default=None,
+        help="Temporal task queue (defaults to env/TEMPORAL_TASK_QUEUE or market-data-task-queue)",
     )
     parser.add_argument(
         "--address",
         type=str,
-        default=os.getenv("TEMPORAL_ADDRESS", "localhost:7233"),
-        help="Temporal server address",
+        default=None,
+        help="Temporal server address (defaults to env/TEMPORAL_ADDRESS or localhost:7233)",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    # Health check: ensure Companies Knowledge Data API is reachable
-    knowledge_api = os.getenv("KNOWLEDGE_API_URL", "http://localhost:8000").rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as http_client:
-            resp = await http_client.get(knowledge_api)
-            resp.raise_for_status()
-    except Exception as e:
-        print(f"Error: Knowledge API health check failed at {knowledge_api}: {e}")
-        sys.exit(1)
 
-    companies = [c.strip() for c in args.companies.split(",") if c.strip()]
-    # Parse years, supporting 'current' to refer to the current year
-    years = []
-    for y in args.years.split(","):
-        y = y.strip()
-        if not y:
-            continue
-        if y.lower() == "current":
-            years.append(datetime.now().year)
-        else:
-            years.append(int(y))
+def _parse_tickers(raw: str) -> List[str]:
+    return [t.strip().upper() for t in raw.split(",") if t.strip()]
 
-    client = await Client.connect(args.address)
-    wf_id = args.workflow_id or f"knowledge_{args.schedule}"
-    # Start workflow: one-time or cron recurring
-    if args.schedule == "once":
-        execution = await client.start_workflow(
-            KnowledgeWorkflow.run,
-            args=[companies, years],
-            id=wf_id,
-            task_queue=args.task_queue,
-        )
-        print(
-            f"Started one-time workflow {wf_id} ({execution.id}) "
-            f"for companies {companies}, years {years}"
-        )
-    else:
-        cron = CRON_SCHEDULES[args.schedule]
-        execution = await client.start_workflow(
-            KnowledgeWorkflow.run,
-            args=[companies, years],
-            id=wf_id,
-            task_queue=args.task_queue,
-            cron_schedule=cron,
-        )
-        print(
-            f"Started workflow {wf_id} ({execution.id}) with schedule '{args.schedule}' ({cron}) "
-            f"for companies {companies}, years {years}"
-        )
+
+async def main() -> None:
+    args = parse_args()
+    settings = load_settings()
+
+    workflow_id = args.workflow_id or f"market_data_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    task_queue = args.task_queue or settings.temporal_task_queue
+    address = args.address or settings.temporal_address
+
+    tickers = _parse_tickers(args.tickers)
+    client = await Client.connect(address)
+    execution = await client.start_workflow(
+        MarketDataWorkflow.run,
+        args=[tickers, args.start_date, args.end_date, args.intraday_frequency, args.fundamentals_mode, args.intraday_mode],
+        id=workflow_id,
+        task_queue=task_queue,
+    )
+    print(
+        f"Started workflow {workflow_id} ({execution.id}) for tickers={tickers} "
+        f"window={args.start_date}..{args.end_date} intraday_freq={args.intraday_frequency} "
+        f"fundamentals_mode={args.fundamentals_mode} intraday_mode={args.intraday_mode}"
+    )
+
 
 if __name__ == "__main__":
     asyncio.run(main())
