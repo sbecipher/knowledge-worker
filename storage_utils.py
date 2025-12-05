@@ -80,7 +80,7 @@ class GCSUploader:
     def __init__(
         self,
         bucket: Optional[str],
-        service_account_key_path: Optional[str],
+        service_account_key_json: Optional[str],
         enabled: bool = True,
     ):
         self.bucket_name = bucket
@@ -89,8 +89,12 @@ class GCSUploader:
         if self.enabled:
             if storage is None:
                 raise RuntimeError("google-cloud-storage is required for uploads")
-            if service_account_key_path:
-                self._client = storage.Client.from_service_account_json(service_account_key_path)
+            if service_account_key_json:
+                try:
+                    key_info = json.loads(service_account_key_json)
+                    self._client = storage.Client.from_service_account_info(key_info)
+                except (json.JSONDecodeError, TypeError) as e:
+                    raise ValueError("Failed to parse GCS service account JSON") from e
             else:
                 self._client = storage.Client()
             self._bucket = self._client.bucket(bucket)

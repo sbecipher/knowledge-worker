@@ -29,7 +29,7 @@ class Settings:
     model_version: str
     temp_dir: str
     upload_enabled: bool
-    gcs_service_account_key_path: Optional[str]
+    gcs_service_account_key_json: Optional[str]
     http_timeout: float
     http_stream_timeout: float
     temporal_task_queue: str
@@ -45,7 +45,7 @@ def load_settings() -> Settings:
     model_version = _env_str("MODEL_VERSION", "1125v")
     temp_dir = _env_str("TEMP_DIR", "tmp")
     upload_enabled = _env_bool("UPLOAD_ENABLED", True)
-    gcs_service_account_key_path = os.getenv("GCS_SERVICE_ACCOUNT_KEY_PATH")
+    gcs_service_account_key_json = os.getenv("GCS_SERVICE_ACCOUNT_KEY_JSON")
     http_timeout = float(_env_str("HTTP_CLIENT_TIMEOUT", "60"))
     http_stream_timeout = float(_env_str("STREAM_CLIENT_TIMEOUT", "600"))
     temporal_task_queue = _env_str("TEMPORAL_TASK_QUEUE", "market-data-task-queue")
@@ -60,7 +60,7 @@ def load_settings() -> Settings:
         model_version=model_version,
         temp_dir=temp_dir,
         upload_enabled=upload_enabled,
-        gcs_service_account_key_path=gcs_service_account_key_path,
+        gcs_service_account_key_json=gcs_service_account_key_json,
         http_timeout=http_timeout,
         http_stream_timeout=http_stream_timeout,
         temporal_task_queue=temporal_task_queue,
