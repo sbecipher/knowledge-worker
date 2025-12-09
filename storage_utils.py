@@ -45,7 +45,8 @@ def build_object_path(
     """
     Build a hierarchical GCS path using normalized components.
     """
-    parts = [p for p in [prefix, layer, instrument, dataset] if p]
+    # instrument is retained in metadata but removed from the path to avoid duplicate trees per instrument
+    parts = [p for p in [prefix, layer, dataset] if p]
 
     if dataset == "models":
         if not model_version:

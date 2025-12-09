@@ -1,6 +1,6 @@
 import argparse
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from temporalio.client import Client
@@ -30,9 +30,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--intraday-mode",
         type=str,
-        choices=["raw", "prod"],
+        choices=["raw", "prod", "none"],
         default="prod",
-        help="Intraday pipeline depth",
+        help="Intraday pipeline depth (use 'none' to skip intraday)",
     )
     parser.add_argument(
         "--workflow-id",
@@ -63,7 +63,8 @@ async def main() -> None:
     args = parse_args()
     settings = load_settings()
 
-    workflow_id = args.workflow_id or f"market_data_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    now_utc = datetime.now(timezone.utc)
+    workflow_id = args.workflow_id or f"market_data_{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
     task_queue = args.task_queue or settings.temporal_task_queue
     address = args.address or settings.temporal_address
 

@@ -25,19 +25,20 @@ export MODEL_VERSION=1125v
 export TEMP_DIR=tmp
 export UPLOAD_ENABLED=true
 export GCS_SERVICE_ACCOUNT_KEY_PATH=/path/to/key.json
+export INTRINIO_API_KEY=your_key                # required for metadata/fundamentals
 export TEMPORAL_ADDRESS=localhost:7233
 export TEMPORAL_TASK_QUEUE=market-data-task-queue
 ```
 
 ## GCS layout (hierarchical)
-- Metadata: `prod/{instrument}/models/companies_{model_version}.json`
+- Metadata: `prod/models/companies_{model_version}.json`
 - Fundamentals:  
-  - Raw: `source/{instrument}/fundamentals/{TICKER}/{start}_{end}.json`  
-  - Stage: `stage/{instrument}/fundamentals/{TICKER}/{start}_{end}.json`  
-  - Prod: `prod/{instrument}/fundamentals/{TICKER}/{start}_{end}.json`  
+  - Raw: `source/fundamentals/{TICKER}/{start}_{end}.json`  
+  - Stage: `stage/fundamentals/{TICKER}/{start}_{end}.json`  
+  - Prod: `prod/fundamentals/{TICKER}/{start}_{end}.json`  
 - Intraday:  
-  - Raw: `source/{instrument}/intraday/{TICKER}/{freq}/{start}_{end}.json`  
-  - Prod: `prod/{instrument}/intraday/{TICKER}/{freq}/{start}_{end}.json`
+  - Raw: `source/intraday/{TICKER}/{freq}/{start}_{end}.json`  
+  - Prod: `prod/intraday/{TICKER}/{freq}/{start}_{end}.json`
 
 Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Stage is required for fundamentals prod.
 
@@ -59,7 +60,15 @@ python client.py \
 
 Modes:
 - Fundamentals: `raw` (source only), `stage` (processed), `prod` (stage → prod)
-- Intraday: `raw` (source), `prod` (raw → prod)
+- Intraday: `raw` (source), `prod` (raw → prod), `none` (skip intraday)
+
+Fundamentals honor the workflow `--start-date/--end-date` window (with `filed_after` nudged forward only if the company’s first trade date is later).
+
+### Common runs
+- Fundamentals + Intraday (full run):  
+  `python client.py --tickers AA,NUE --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode prod --intraday-frequency daily`
+- Fundamentals only:  
+  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode none`
 
 ## What the workflow does
 - Health check `/health`

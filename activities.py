@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -78,9 +79,7 @@ async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[
     """
     if activity.is_cancelled():
         raise RuntimeError("fetch_companies_metadata cancelled")
-    payload: Dict[str, Any] = {}
-    if tickers:
-        payload["tickers"] = tickers
+    payload: Dict[str, Any] = {"tickers": tickers} if tickers else {}
 
     data = await _post_json("/api/v2/companies/metadata", payload)
     activity.heartbeat({"count": len(data)})
@@ -106,6 +105,7 @@ def _save_artifacts(
     dataset: str,
     extra_meta: Optional[Dict[str, str]] = None,
     freq: Optional[str] = None,
+    include_full_artifact: bool = False,
 ) -> List[dict]:
     summaries: List[dict] = []
     for artifact in artifacts:
@@ -136,17 +136,22 @@ def _save_artifacts(
         if identifier:
             meta["identifier"] = identifier
         uri = UPLOADER.upload_file(local_path, object_path, metadata=meta)
-        summaries.append(
-            {
+        if include_full_artifact:
+            summary = dict(artifact)
+        else:
+            summary = {
                 "ticker": ticker,
                 "start_date": start_date,
                 "end_date": end_date,
                 "frequency": freq or artifact.get("frequency"),
-                "object_path": object_path,
-                "uri": uri,
                 "record_count": len(artifact.get("data", [])),
             }
-        )
+        summary["object_path"] = object_path
+        summary["uri"] = uri
+        summary["local_path"] = str(local_path)
+        if "record_count" not in summary:
+            summary["record_count"] = len(artifact.get("data", []))
+        summaries.append(summary)
     return summaries
 
 
@@ -189,12 +194,19 @@ async def fetch_fundamentals_prod(staged_artifacts: List[dict]) -> List[dict]:
         ticker = artifact.get("ticker")
         start_date = artifact.get("start_date")
         end_date = artifact.get("end_date")
+        data_block = artifact.get("data")
+        if not data_block and artifact.get("local_path"):
+            try:
+                loaded = json.loads(Path(artifact["local_path"]).read_text(encoding="utf-8"))
+                data_block = loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to reload staged fundamentals from %s: %s", artifact["local_path"], exc)
         payload = {
             "tickers": [ticker],
             "start_date": start_date,
             "end_date": end_date,
             "collect": False,
-            "data": artifact.get("data", []),
+            "data": data_block or [],
         }
         data = await _post_json("/api/v2/companies/fundamentals/production", payload)
         activity.heartbeat({"ticker": ticker, "count": len(data)})
@@ -225,13 +237,20 @@ async def fetch_intraday_prod(raw_artifacts: List[dict], frequency: str) -> List
         ticker = artifact.get("ticker")
         start_date = artifact.get("start_date")
         end_date = artifact.get("end_date")
+        data_block = artifact.get("data")
+        if not data_block and artifact.get("local_path"):
+            try:
+                loaded = json.loads(Path(artifact["local_path"]).read_text(encoding="utf-8"))
+                data_block = loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to reload raw intraday from %s: %s", artifact["local_path"], exc)
         payload = {
             "tickers": [ticker],
             "start_date": start_date,
             "end_date": end_date,
             "frequency": frequency,
             "collect": False,
-            "data": artifact.get("data", []),
+            "data": data_block or [],
         }
         data = await _post_json("/api/v2/companies/intraday/production", payload)
         activity.heartbeat({"ticker": ticker, "count": len(data)})
