@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 SETTINGS = load_settings()
 UPLOADER = GCSUploader(
     bucket=SETTINGS.gcs_bucket,
-    service_account_key_path=SETTINGS.gcs_service_account_key_path,
+    service_account_key_json=SETTINGS.gcs_service_account_key_json,
     enabled=SETTINGS.upload_enabled,
 )
 
