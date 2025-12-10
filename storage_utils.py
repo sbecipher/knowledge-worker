@@ -3,11 +3,7 @@ import logging
 import os
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
-
-try:
-    from google.cloud import storage
-except ImportError:  # pragma: no cover - handled at runtime if dependency missing
-    storage = None  # type: ignore
+from google.cloud.storage import Client as GCSClient # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -88,16 +84,16 @@ class GCSUploader:
         self.enabled = enabled and bool(bucket)
         self._client = None
         if self.enabled:
-            if storage is None:
+            if GCSClient is None:
                 raise RuntimeError("google-cloud-storage is required for uploads")
             if service_account_key_json:
                 try:
                     key_info = json.loads(service_account_key_json)
-                    self._client = storage.Client.from_service_account_info(key_info)
+                    self._client = GCSClient.from_service_account_info(key_info)
                 except (json.JSONDecodeError, TypeError) as e:
                     raise ValueError("Failed to parse GCS service account JSON") from e
             else:
-                self._client = storage.Client()
+                self._client = GCSClient()
             self._bucket = self._client.bucket(bucket)
         else:
             self._bucket = None
