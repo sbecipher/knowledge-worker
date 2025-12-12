@@ -47,7 +47,7 @@ def build_object_path(
     if dataset == "models":
         if not model_version:
             raise ValueError("model_version required for models path")
-        filename = f"companies_{model_version}.json"
+        filename = f"{model_version}.json"
         parts.append(filename)
         return str(PurePosixPath(*parts))
 

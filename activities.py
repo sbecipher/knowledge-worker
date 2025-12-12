@@ -75,7 +75,7 @@ async def check_marketio_health() -> None:
 @activity.defn(name="fetch_companies_metadata")
 async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[str, Any]:
     """
-    Fetch metadata and upload to prod/{instrument}/models/companies_{model_version}.json.
+    Fetch metadata and upload to prod/models/companies_{model_version}.json.
     """
     if activity.is_cancelled():
         raise RuntimeError("fetch_companies_metadata cancelled")
