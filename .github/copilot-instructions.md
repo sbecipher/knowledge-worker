@@ -58,11 +58,11 @@ The workflow uses `asyncio.gather()` to process multiple tickers concurrently wi
 
 | File | Key Pattern |
 |------|-------------|
-| [workflows.py](workflows.py#L38-L115) | `async def run()` orchestrates activities with retry policies; `process_ticker()` parallelizes work. |
-| [activities.py](activities.py#L56-L93) | Health/metadata activities; `_save_artifacts()` writes JSON and uploads with metadata. |
-| [activities.py](activities.py#L160-L191) | `fetch_fundamentals_prod()` reloads staged data if needed before calling production endpoint. |
-| [storage_utils.py](storage_utils.py#L26-L50) | `build_object_path()` normalizes layers, datasets, tickers, dates (YYYYMMDD), and prefixes. |
-| [client.py](client.py#L41-L68) | CLI validates modes (raw/stage/prod for fundamentals; raw/prod/none for intraday). |
+| [workflows.py](../workflows.py) | `async def run()` orchestrates activities with retry policies; `process_ticker()` parallelizes work. |
+| [activities.py](../activities.py) | Health/metadata activities; `_save_artifacts()` writes JSON and uploads with metadata. |
+| [activities.py](../activities.py) | `fetch_fundamentals_prod()` reloads staged data if needed before calling production endpoint. |
+| [storage_utils.py](../storage_utils.py) | `build_object_path()` normalizes layers, datasets, tickers, dates (YYYYMMDD), and prefixes. |
+| [client.py](../client.py) | CLI validates modes (raw/stage/prod for fundamentals; raw/prod/none for intraday). |
 
 ## Development Workflow
 
