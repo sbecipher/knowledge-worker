@@ -35,7 +35,7 @@ export TEMPORAL_TASK_QUEUE=market-data-task-queue
 
 ## GCS layout (hierarchical)
 
-- Metadata: `prod/models/{INSTRUMENT}/{model_version}.json`
+- Metadata: `prod/models/{model_version}.json`
 - EDGAR submissions: `source/edgar/{TICKER}/{TICKER}.json`
 - Fundamentals:  
   - Raw: `source/fundamentals/{TICKER}/{start}_{end}.json`  
@@ -68,29 +68,35 @@ python client.py \
 
 Modes:
 
-- Fundamentals: `raw` (source only), `stage` (processed), `prod` (stage → prod)
+- Fundamentals: `raw` (source only), `stage` (processed), `prod` (stage → prod), `none` (skip fundamentals)
 - Intraday: `raw` (source), `prod` (raw → prod), `none` (skip intraday)
-- EDGAR: toggled via `--edgar-source` to fetch SEC submissions (source=True) per ticker
+- EDGAR: toggled via `--edgar-source` to fetch SEC submissions (source=True) per ticker or `--edgar-only` to fetch just EDGAR
+- Metadata-only: `--metadata-only` fetches just metadata and exits early
 
 Fundamentals honor the workflow `--start-date/--end-date` window (with `filed_after` nudged forward only if the company’s first trade date is later).
 
 ### Common runs
 
+- Intraday only (skip fundamentals):  
+  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode none --intraday-mode prod --intraday-frequency daily`
+- Metadata only:  
+  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode none --intraday-mode none --metadata-only`
+- EDGAR only (raw SEC submissions):  
+  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode none --intraday-mode none --edgar-only`
 - Metadata + EDGAR submissions (adds SEC submissions to the regular fundamentals run):  
-  `python client.py --tickers AAPL --start-date 2024-01-01 --end-date 2024-12-31 --fundamentals-mode prod --intraday-mode none --edgar-source`
+  `python client.py --tickers AA --start-date 2024-01-01 --end-date 2024-12-31 --fundamentals-mode prod --intraday-mode none --edgar-source`
 - Fundamentals + Intraday (full run):  
   `python client.py --tickers AA,NUE --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode prod --intraday-frequency daily`
 - Fundamentals only:  
   `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode none`
 
-## What the workflow does
+## What the workflow does (per ticker)
 
 - Health check `/health`
-- Metadata → write/upload companies file
-- EDGAR submissions → per ticker raw SEC submissions (source=True) uploaded under `source/edgar/`
-- Per ticker:
-  - Fundamentals path: raw → stage → prod (from staged data)
-  - Intraday path: raw → prod
+- Metadata → write/upload companies file (always runs; EDGAR uses CIKs from metadata when present)
+- EDGAR submissions → per ticker raw SEC submissions (source=True) uploaded under `source/edgar/` when `--edgar-source/--edgar-only`
+- Fundamentals path: raw → stage → prod (from staged data) unless `--fundamentals-mode none` or `--edgar-only`
+- Intraday path: raw → prod unless `--intraday-mode none` or `--edgar-only`
 - Uploads JSON artifacts with metadata in GCS object metadata (instrument, layer, ticker, window, run_id).
 
 ## Activities

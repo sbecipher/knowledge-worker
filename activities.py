@@ -107,7 +107,19 @@ async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[
     metadata = _metadata_base("prod", "models", None, None, None, None)
     uri = UPLOADER.upload_file(local_path, object_path, metadata=metadata)
 
-    return {"uri": uri, "object_path": object_path, "record_count": len(data)}
+    cik_map = {
+        (item.get("ticker") or "").upper(): str(item.get("cik")).zfill(10)
+        for item in data
+        if isinstance(item, dict) and item.get("ticker") and item.get("cik")
+    }
+
+    return {
+        "uri": uri,
+        "object_path": object_path,
+        "record_count": len(data),
+        "companies": data,
+        "ciks": cik_map,
+    }
 
 
 @activity.defn(name="fetch_edgar_source")
@@ -242,16 +254,36 @@ async def fetch_fundamentals_raw(tickers: List[str], start_date: str, end_date: 
 
 
 @activity.defn(name="fetch_fundamentals_stage")
-async def fetch_fundamentals_stage(tickers: List[str], start_date: str, end_date: str) -> List[dict]:
-    payload = {
-        "tickers": tickers,
-        "start_date": start_date,
-        "end_date": end_date,
-        "collect": True,
-    }
-    data = await _post_json("/api/v2/companies/fundamentals/processed", payload)
-    activity.heartbeat({"count": len(data)})
-    return _save_artifacts(data, layer="stage", dataset="fundamentals")
+async def fetch_fundamentals_stage(raw_artifacts: List[dict]) -> List[dict]:
+    """
+    Build staged fundamentals from raw artifacts and upload.
+    """
+    if not raw_artifacts:
+        raise ValueError("No raw fundamentals provided for staging step")
+
+    results: List[dict] = []
+    for artifact in raw_artifacts:
+        ticker = artifact.get("ticker")
+        start_date = artifact.get("start_date")
+        end_date = artifact.get("end_date")
+        data_block = artifact.get("data")
+        if not data_block and artifact.get("local_path"):
+            try:
+                loaded = json.loads(Path(artifact["local_path"]).read_text(encoding="utf-8"))
+                data_block = loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to reload raw fundamentals from %s: %s", artifact["local_path"], exc)
+        payload = {
+            "tickers": [ticker],
+            "start_date": start_date,
+            "end_date": end_date,
+            "collect": False,
+            "data": data_block or [],
+        }
+        data = await _post_json("/api/v2/companies/fundamentals/processed", payload)
+        activity.heartbeat({"ticker": ticker, "count": len(data)})
+        results.extend(data)
+    return _save_artifacts(results, layer="stage", dataset="fundamentals")
 
 
 @activity.defn(name="fetch_fundamentals_prod")

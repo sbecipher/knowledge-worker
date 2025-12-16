@@ -39,13 +39,13 @@ class Settings:
 
 def load_settings() -> Settings:
     marketio_api_url = _env_str("MARKETIO_API_URL", "http://localhost:8000").rstrip("/")
-    gcs_bucket = os.getenv("GCS_BUCKET")
+    gcs_bucket = _env_str("GCS_BUCKET", "sbecipher-intelligence")
     gcs_prefix = _env_str("GCS_PREFIX", "").strip("/")
     instrument = _env_str("INSTRUMENT", "ssga-xme").lower()
     model_version = _env_str("MODEL_VERSION", "ssga-xme-metadata-v1225")
     temp_dir = _env_str("TEMP_DIR", "tmp")
     upload_enabled = _env_bool("UPLOAD_ENABLED", True)
-    gcs_service_account_key_json = os.getenv("GCS_SERVICE_ACCOUNT_KEY_JSON")
+    gcs_service_account_key_json = _env_str("GCS_SERVICE_ACCOUNT_KEY_JSON", "")
     http_timeout = float(_env_str("HTTP_CLIENT_TIMEOUT", "60"))
     http_stream_timeout = float(_env_str("STREAM_CLIENT_TIMEOUT", "600"))
     temporal_task_queue = _env_str("TEMPORAL_TASK_QUEUE", "marketio-task-queue")

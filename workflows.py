@@ -43,53 +43,79 @@ class MarketDataWorkflow:
         fundamentals_mode: str = "prod",
         intraday_mode: str = "prod",
         edgar_source: bool = False,
+        metadata_only: bool = False,
+        edgar_only: bool = False,
     ) -> Dict[str, List[dict]]:
         """
         Orchestrates metadata, fundamentals (raw->stage->prod), intraday (raw->prod), and optional EDGAR pulls.
         """
+        if metadata_only and edgar_only:
+            raise ValueError("metadata_only and edgar_only cannot both be true")
+
         await workflow.execute_activity(
             CHECK_MARKETIO_HEALTH,
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=SHORT_RETRY,
         )
 
-        # Metadata once per run
         metadata_result = await workflow.execute_activity(
             FETCH_COMPANIES_METADATA,
             args=[tickers],
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=SHORT_RETRY,
         )
-
         results: Dict[str, List[dict]] = {"metadata": [metadata_result]}
+
+        if metadata_only:
+            return results
+
+        companies = []
+        if isinstance(metadata_result, dict):
+            companies = metadata_result.get("companies") or []
+        ticker_ciks = {
+            (item.get("ticker") or "").upper(): str(item.get("cik")).zfill(10)
+            for item in companies
+            if isinstance(item, dict) and item.get("ticker") and item.get("cik")
+        }
+
+        do_edgar = edgar_only or edgar_source
+        do_fundamentals = fundamentals_mode in {"raw", "stage", "prod"} and not edgar_only
+        do_intraday = intraday_mode in {"raw", "prod"} and not edgar_only
 
         async def process_ticker(ticker: str) -> Dict[str, List[dict]]:
             ticker_results: Dict[str, List[dict]] = {}
+            edgar_kwargs = {}
+            cik_value = ticker_ciks.get(ticker.upper())
+            if cik_value:
+                edgar_kwargs["ciks"] = [cik_value]
+            else:
+                edgar_kwargs["tickers"] = [ticker]
+
             edgar_payload = await workflow.execute_activity(
                 FETCH_EDGAR_SOURCE,
-                args=[[ticker]],
+                kwargs=edgar_kwargs,
                 start_to_close_timeout=timedelta(minutes=3),
                 retry_policy=LONG_RETRY,
-            ) if edgar_source else []
+            ) if do_edgar else []
             # Fundamentals path
             fundamentals_raw = await workflow.execute_activity(
                 FETCH_FUNDAMENTALS_RAW,
                 args=[[ticker], start_date, end_date],
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=LONG_RETRY,
-            ) if fundamentals_mode in {"raw", "stage", "prod"} else []
+            ) if do_fundamentals else []
 
-            if fundamentals_mode in {"stage", "prod"}:
+            if fundamentals_mode in {"stage", "prod"} and do_fundamentals:
                 fundamentals_stage = await workflow.execute_activity(
                     FETCH_FUNDAMENTALS_STAGE,
-                    args=[[ticker], start_date, end_date],
+                    args=[fundamentals_raw],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
                 )
             else:
                 fundamentals_stage = []
 
-            if fundamentals_mode == "prod":
+            if fundamentals_mode == "prod" and do_fundamentals:
                 fundamentals_prod = await workflow.execute_activity(
                     FETCH_FUNDAMENTALS_PROD,
                     args=[fundamentals_stage],
@@ -110,9 +136,9 @@ class MarketDataWorkflow:
                 args=[[ticker], start_date, end_date, intraday_frequency],
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=LONG_RETRY,
-            ) if intraday_mode in {"raw", "prod"} else []
+            ) if do_intraday else []
 
-            if intraday_mode == "prod":
+            if intraday_mode == "prod" and do_intraday:
                 intraday_prod = await workflow.execute_activity(
                     FETCH_INTRADAY_PROD,
                     args=[intraday_raw, intraday_frequency],

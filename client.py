@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fundamentals-mode",
         type=str,
-        choices=["raw", "stage", "prod"],
+        choices=["raw", "stage", "prod", "none"],
         default="prod",
         help="Fundamentals pipeline depth",
     )
@@ -57,6 +57,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Temporal server address (defaults to env/TEMPORAL_ADDRESS or localhost:7233)",
     )
+    exclusive = parser.add_mutually_exclusive_group()
+    exclusive.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Fetch only metadata and skip per-ticker fundamentals/intraday/edgar",
+    )
+    exclusive.add_argument(
+        "--edgar-only",
+        action="store_true",
+        help="Fetch only EDGAR submissions (forces --edgar-source) and skip fundamentals/intraday",
+    )
     return parser.parse_args()
 
 
@@ -74,6 +85,9 @@ async def main() -> None:
     address = args.address or settings.temporal_address
 
     tickers = _parse_tickers(args.tickers)
+    if args.edgar_only:
+        args.edgar_source = True
+
     client = await Client.connect(address)
     execution = await client.start_workflow(
         MarketDataWorkflow.run,
@@ -85,6 +99,8 @@ async def main() -> None:
             args.fundamentals_mode,
             args.intraday_mode,
             args.edgar_source,
+            args.metadata_only,
+            args.edgar_only,
         ],
         id=workflow_id,
         task_queue=task_queue,
@@ -93,7 +109,7 @@ async def main() -> None:
         f"Started workflow {workflow_id} ({execution.id}) for tickers={tickers} "
         f"window={args.start_date}..{args.end_date} intraday_freq={args.intraday_frequency} "
         f"fundamentals_mode={args.fundamentals_mode} intraday_mode={args.intraday_mode} "
-        f"edgar_source={args.edgar_source}"
+        f"edgar_source={args.edgar_source} metadata_only={args.metadata_only} edgar_only={args.edgar_only}"
     )
 
 
