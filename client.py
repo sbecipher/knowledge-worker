@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
         help="Intraday pipeline depth (use 'none' to skip intraday)",
     )
     parser.add_argument(
+        "--edgar-source",
+        action="store_true",
+        help="Set to fetch EDGAR submissions (source=True) for each ticker",
+    )
+    parser.add_argument(
         "--workflow-id",
         type=str,
         default=None,
@@ -72,14 +77,23 @@ async def main() -> None:
     client = await Client.connect(address)
     execution = await client.start_workflow(
         MarketDataWorkflow.run,
-        args=[tickers, args.start_date, args.end_date, args.intraday_frequency, args.fundamentals_mode, args.intraday_mode],
+        args=[
+            tickers,
+            args.start_date,
+            args.end_date,
+            args.intraday_frequency,
+            args.fundamentals_mode,
+            args.intraday_mode,
+            args.edgar_source,
+        ],
         id=workflow_id,
         task_queue=task_queue,
     )
     print(
         f"Started workflow {workflow_id} ({execution.id}) for tickers={tickers} "
         f"window={args.start_date}..{args.end_date} intraday_freq={args.intraday_frequency} "
-        f"fundamentals_mode={args.fundamentals_mode} intraday_mode={args.intraday_mode}"
+        f"fundamentals_mode={args.fundamentals_mode} intraday_mode={args.intraday_mode} "
+        f"edgar_source={args.edgar_source}"
     )
 
 

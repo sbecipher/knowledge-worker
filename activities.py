@@ -30,6 +30,17 @@ def _temp_path(object_path: str) -> Path:
     return path
 
 
+def _recent_filings_count(payload: Dict[str, Any]) -> int:
+    """
+    Count the number of recent SEC filings in a submissions payload.
+    """
+    recent = payload.get("filings", {}).get("recent", {})
+    if not isinstance(recent, dict):
+        return 0
+    accessions = recent.get("accessionNumber") or []
+    return len(accessions) if isinstance(accessions, list) else 0
+
+
 def _metadata_base(layer: str, dataset: str, ticker: Optional[str], start: Optional[str], end: Optional[str], freq: Optional[str]) -> Dict[str, str]:
     meta = {
         "layer": layer,
@@ -50,7 +61,7 @@ def _metadata_base(layer: str, dataset: str, ticker: Optional[str], start: Optio
     return meta
 
 
-async def _post_json(endpoint: str, payload: dict) -> Any:
+async def _post_json(endpoint: str, payload: Any) -> Any:
     url = f"{SETTINGS.marketio_api_url}{endpoint}"
     async with _make_client() as client:
         resp = await client.post(url, json=payload)
@@ -97,6 +108,68 @@ async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[
     uri = UPLOADER.upload_file(local_path, object_path, metadata=metadata)
 
     return {"uri": uri, "object_path": object_path, "record_count": len(data)}
+
+
+@activity.defn(name="fetch_edgar_source")
+async def fetch_edgar_source(
+    tickers: Optional[List[str]] = None,
+    ciks: Optional[List[str]] = None,
+) -> List[dict]:
+    """
+    Fetch raw EDGAR submissions (source=True) and upload them to GCS.
+    """
+    if activity.is_cancelled():
+        raise RuntimeError("fetch_edgar_source cancelled")
+
+    requests: List[Dict[str, Any]] = []
+    if tickers:
+        requests.extend({"ticker": t, "source": True} for t in tickers)
+    if ciks:
+        requests.extend({"cik": c, "source": True} for c in ciks)
+    if not requests:
+        raise ValueError("At least one ticker or CIK must be provided")
+
+    payload: Any = requests[0] if len(requests) == 1 else requests
+    raw_response = await _post_json("/api/v2/companies/edgar", payload)
+    responses: List[Any] = raw_response if isinstance(raw_response, list) else [raw_response]
+
+    if len(responses) != len(requests):
+        logger.warning("EDGAR response count mismatch requests=%s responses=%s", len(requests), len(responses))
+
+    artifacts: List[dict] = []
+    for idx, response in enumerate(responses):
+        request_meta = requests[idx] if idx < len(requests) else {}
+        artifact: Dict[str, Any] = dict(response) if isinstance(response, dict) else {"payload": response}
+
+        ticker_candidate = request_meta.get("ticker")
+        ticker_list = artifact.get("tickers") if isinstance(artifact, dict) else None
+        derived_ticker = (
+            (ticker_candidate or "").upper()
+            or (str(ticker_list[0]).upper() if isinstance(ticker_list, list) and ticker_list else "")
+        )
+        cik_value = artifact.get("cik") or request_meta.get("cik")
+        if not derived_ticker:
+            derived_ticker = f"CIK{str(cik_value).zfill(10)}" if cik_value else f"edgar-{idx + 1}"
+
+        artifact["ticker"] = derived_ticker
+        if cik_value:
+            try:
+                artifact["cik"] = str(cik_value).zfill(10)
+            except Exception:  # noqa: BLE001
+                artifact["cik"] = str(cik_value)
+
+        artifact["record_count"] = _recent_filings_count(artifact)
+        artifact["requested_ticker"] = ticker_candidate
+        artifacts.append(artifact)
+
+    activity.heartbeat({"requested": len(requests), "received": len(artifacts)})
+    return _save_artifacts(
+        artifacts,
+        layer="source",
+        dataset="edgar",
+        extra_meta={"edgar_source": "true"},
+        include_full_artifact=True,
+    )
 
 
 def _save_artifacts(

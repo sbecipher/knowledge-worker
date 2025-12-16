@@ -6,6 +6,7 @@ from temporalio.worker import Worker
 from activities import (
     check_marketio_health,
     fetch_companies_metadata,
+    fetch_edgar_source,
     fetch_fundamentals_prod,
     fetch_fundamentals_raw,
     fetch_fundamentals_stage,
@@ -27,6 +28,7 @@ async def main() -> None:
         activities=[
             check_marketio_health,
             fetch_companies_metadata,
+            fetch_edgar_source,
             fetch_fundamentals_raw,
             fetch_fundamentals_stage,
             fetch_fundamentals_prod,

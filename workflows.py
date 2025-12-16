@@ -9,6 +9,7 @@ from temporalio.common import RetryPolicy
 # workflow sandbox blocks dependencies used by activities (e.g., httpx/sniffio).
 CHECK_MARKETIO_HEALTH = "check_marketio_health"
 FETCH_COMPANIES_METADATA = "fetch_companies_metadata"
+FETCH_EDGAR_SOURCE = "fetch_edgar_source"
 FETCH_FUNDAMENTALS_RAW = "fetch_fundamentals_raw"
 FETCH_FUNDAMENTALS_STAGE = "fetch_fundamentals_stage"
 FETCH_FUNDAMENTALS_PROD = "fetch_fundamentals_prod"
@@ -41,9 +42,10 @@ class MarketDataWorkflow:
         intraday_frequency: str = "daily",
         fundamentals_mode: str = "prod",
         intraday_mode: str = "prod",
+        edgar_source: bool = False,
     ) -> Dict[str, List[dict]]:
         """
-        Orchestrates metadata, fundamentals (raw->stage->prod), and intraday (raw->prod).
+        Orchestrates metadata, fundamentals (raw->stage->prod), intraday (raw->prod), and optional EDGAR pulls.
         """
         await workflow.execute_activity(
             CHECK_MARKETIO_HEALTH,
@@ -63,6 +65,12 @@ class MarketDataWorkflow:
 
         async def process_ticker(ticker: str) -> Dict[str, List[dict]]:
             ticker_results: Dict[str, List[dict]] = {}
+            edgar_payload = await workflow.execute_activity(
+                FETCH_EDGAR_SOURCE,
+                args=[[ticker]],
+                start_to_close_timeout=timedelta(minutes=3),
+                retry_policy=LONG_RETRY,
+            ) if edgar_source else []
             # Fundamentals path
             fundamentals_raw = await workflow.execute_activity(
                 FETCH_FUNDAMENTALS_RAW,
@@ -91,6 +99,7 @@ class MarketDataWorkflow:
             else:
                 fundamentals_prod = []
 
+            ticker_results["edgar_source"] = edgar_payload
             ticker_results["fundamentals_raw"] = fundamentals_raw
             ticker_results["fundamentals_stage"] = fundamentals_stage
             ticker_results["fundamentals_prod"] = fundamentals_prod
