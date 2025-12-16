@@ -41,13 +41,15 @@ def build_object_path(
     """
     Build a hierarchical GCS path using normalized components.
     """
-    # instrument is retained in metadata but removed from the path to avoid duplicate trees per instrument
     parts = [p for p in [prefix, layer, dataset] if p]
 
     if dataset == "models":
         if not model_version:
             raise ValueError("model_version required for models path")
-        filename = f"{instrument}/{model_version}.json"
+        if not instrument:
+            raise ValueError("instrument required for models path")
+        parts.append(instrument.lower())
+        filename = f"{model_version}.json"
         parts.append(filename)
         return str(PurePosixPath(*parts))
 
