@@ -35,7 +35,7 @@ export TEMPORAL_TASK_QUEUE=market-data-task-queue
 
 ## GCS layout (hierarchical)
 
-- Metadata: `prod/models/companies_{model_version}.json`
+- Metadata: `prod/models/{INSTRUMENT}/{model_version}.json`
 - EDGAR submissions: `source/edgar/{TICKER}/{TICKER}.json`
 - Fundamentals:  
   - Raw: `source/fundamentals/{TICKER}/{start}_{end}.json`  
