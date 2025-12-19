@@ -44,7 +44,7 @@ def load_settings() -> Settings:
     instrument = _env_str("INSTRUMENT", "ssga-xme").lower()
     model_version = _env_str("MODEL_VERSION", "ssga-xme-metadata-v1225")
     temp_dir = _env_str("TEMP_DIR", "tmp")
-    upload_enabled = _env_bool("UPLOAD_ENABLED", True)
+    upload_enabled = _env_bool("UPLOAD_ENABLED", False)
     gcs_service_account_key_json = _env_str("GCS_SERVICE_ACCOUNT_KEY_JSON", "")
     http_timeout = float(_env_str("HTTP_CLIENT_TIMEOUT", "60"))
     http_stream_timeout = float(_env_str("STREAM_CLIENT_TIMEOUT", "600"))

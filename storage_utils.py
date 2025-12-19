@@ -7,6 +7,30 @@ from google.cloud.storage import Client as GCSClient # type: ignore
 
 logger = logging.getLogger(__name__)
 
+INTRADAY_DIR_MAP = {
+    "daily": "intraday",
+    "eod": "intraday",
+    "weekly": "week",
+    "wk": "week",
+    "monthly": "month",
+    "mth": "month",
+    "quarterly": "quarter",
+    "quarter": "quarter",
+    "qtr": "quarter",
+}
+
+INTRADAY_FREQ_SLUGS = {
+    "daily": "eod",
+    "eod": "eod",
+    "weekly": "wk",
+    "wk": "wk",
+    "monthly": "mth",
+    "mth": "mth",
+    "quarterly": "qtr",
+    "quarter": "qtr",
+    "qtr": "qtr",
+}
+
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -41,7 +65,7 @@ def build_object_path(
     """
     Build a hierarchical GCS path using normalized components.
     """
-    parts = [p for p in [prefix, layer, dataset] if p]
+    parts = [p for p in [prefix, layer] if p]
 
     if dataset == "models":
         if not model_version:
@@ -53,15 +77,22 @@ def build_object_path(
         parts.append(filename)
         return str(PurePosixPath(*parts))
 
+    freq_normalized = freq.lower() if isinstance(freq, str) else None
+    if dataset == "intraday" and freq_normalized:
+        dataset_dir = INTRADAY_DIR_MAP.get(freq_normalized, "intraday")
+        filename_freq_slug = INTRADAY_FREQ_SLUGS.get(freq_normalized, freq_normalized)
+    else:
+        dataset_dir = dataset
+        filename_freq_slug = freq_normalized
+
+    parts.append(dataset_dir)
     if ticker:
         parts.append(ticker.upper())
-    if freq:
-        parts.append(freq.lower())
     filename_parts = []
     if ticker and dataset != "models":
         filename_parts.append(ticker.upper())
-    if freq:
-        filename_parts.append(freq.lower())
+    if filename_freq_slug:
+        filename_parts.append(filename_freq_slug)
     if start_date:
         filename_parts.append(format_date(start_date))
     if end_date:

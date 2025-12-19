@@ -41,9 +41,12 @@ export TEMPORAL_TASK_QUEUE=market-data-task-queue
   - Raw: `source/fundamentals/{TICKER}/{start}_{end}.json`  
   - Stage: `stage/fundamentals/{TICKER}/{start}_{end}.json`  
   - Prod: `prod/fundamentals/{TICKER}/{start}_{end}.json`  
-- Intraday:  
-  - Raw: `source/intraday/{TICKER}/{freq}/{start}_{end}.json`  
-  - Prod: `prod/intraday/{TICKER}/{freq}/{start}_{end}.json`
+- Intraday (examples):  
+  - Daily (eod): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`  
+  - Weekly: `source/week/{TICKER}/{TICKER}_wk_{start}_{end}.json`  
+  - Monthly: `source/month/{TICKER}/{TICKER}_mth_{start}_{end}.json`  
+  - Quarterly: `source/quarter/{TICKER}/{TICKER}_qtr_{start}_{end}.json`  
+  - Prod mirrors the same directory and filename structure under `prod/`
 
 Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Stage is required for fundamentals prod.
 

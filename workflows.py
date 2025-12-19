@@ -93,7 +93,7 @@ class MarketDataWorkflow:
 
             edgar_payload = await workflow.execute_activity(
                 FETCH_EDGAR_SOURCE,
-                kwargs=edgar_kwargs,
+                args=[edgar_kwargs.get("tickers"), edgar_kwargs.get("ciks")],
                 start_to_close_timeout=timedelta(minutes=3),
                 retry_policy=LONG_RETRY,
             ) if do_edgar else []
