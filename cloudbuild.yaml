@@ -1,27 +1,34 @@
 substitutions:
   _REGION: us-central1
-  _SERVICE_NAME: marketflow-worker
-  _IMAGE: gcr.io/$PROJECT_ID/marketflow-worker
+  _WORKER_SERVICE: marketflow-worker
+  _CLIENT_JOB: marketflow-client
+  _WORKER_IMAGE: gcr.io/$PROJECT_ID/marketflow-worker
+  _CLIENT_IMAGE: gcr.io/$PROJECT_ID/marketflow-client
   _SERVICE_ACCOUNT: 875978034496-compute@developer.gserviceaccount.com
   _TEMPORAL_ADDRESS: temporal.sbecipher.io:7233
+  _TEMPORAL_TASK_QUEUE: marketio-task-queue
   _MARKETIO_API_URL: https://marketio-875978034496.us-central1.run.app
   _INTRINIO_SECRET: marketio-data-api-intrinio
   _MIN_INSTANCES: "1"
 
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "-t", "$_IMAGE:$SHORT_SHA", "."]
+    args: ["build", "-f", "Dockerfile", "-t", "$_WORKER_IMAGE:$SHORT_SHA", "."]
   - name: gcr.io/cloud-builders/docker
-    args: ["push", "$_IMAGE:$SHORT_SHA"]
+    args: ["push", "$_WORKER_IMAGE:$SHORT_SHA"]
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.client", "-t", "$_CLIENT_IMAGE:$SHORT_SHA", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "$_CLIENT_IMAGE:$SHORT_SHA"]
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
     args:
       [
         "run",
         "deploy",
-        "$_SERVICE_NAME",
+        "$_WORKER_SERVICE",
         "--image",
-        "$_IMAGE:$SHORT_SHA",
+        "$_WORKER_IMAGE:$SHORT_SHA",
         "--region",
         "$_REGION",
         "--platform",
@@ -37,6 +44,25 @@ steps:
         "--no-cpu-throttling",
         "--quiet",
       ]
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      [
+        "run",
+        "jobs",
+        "deploy",
+        "$_CLIENT_JOB",
+        "--image",
+        "$_CLIENT_IMAGE:$SHORT_SHA",
+        "--region",
+        "$_REGION",
+        "--service-account",
+        "$_SERVICE_ACCOUNT",
+        "--set-env-vars",
+        "TEMPORAL_ADDRESS=$_TEMPORAL_ADDRESS,TEMPORAL_TASK_QUEUE=$_TEMPORAL_TASK_QUEUE",
+        "--quiet",
+      ]
 
 images:
-  - "$_IMAGE:$SHORT_SHA"
+  - "$_WORKER_IMAGE:$SHORT_SHA"
+  - "$_CLIENT_IMAGE:$SHORT_SHA"

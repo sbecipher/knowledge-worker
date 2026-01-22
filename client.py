@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from temporalio.client import Client
 
@@ -9,7 +9,7 @@ from config import load_settings
 from workflows import MarketDataWorkflow
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start MarketDataWorkflow with Marketio API")
     parser.add_argument("--tickers", type=str, required=True, help="Comma-separated tickers, e.g., AA,NUE")
     parser.add_argument("--start-date", type=str, required=True, help="Start date (YYYY-MM-DD)")
@@ -68,15 +68,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fetch only EDGAR submissions (forces --edgar-source) and skip fundamentals/intraday",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _parse_tickers(raw: str) -> List[str]:
     return [t.strip().upper() for t in raw.split(",") if t.strip()]
 
 
-async def main() -> None:
-    args = parse_args()
+async def run_with_args(args: argparse.Namespace) -> None:
     settings = load_settings()
 
     now_utc = datetime.now(timezone.utc)
@@ -111,6 +110,11 @@ async def main() -> None:
         f"fundamentals_mode={args.fundamentals_mode} intraday_mode={args.intraday_mode} "
         f"edgar_source={args.edgar_source} metadata_only={args.metadata_only} edgar_only={args.edgar_only}"
     )
+
+
+async def main() -> None:
+    args = parse_args()
+    await run_with_args(args)
 
 
 if __name__ == "__main__":

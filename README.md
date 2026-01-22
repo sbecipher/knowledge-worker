@@ -85,6 +85,78 @@ does not scale to zero.
 Cloud Run uses workload identity, so no service account JSON key is needed. The Cloud Run
 service account must have access to the GCS bucket and Secret Manager.
 
+## Cloud Run targets (worker service + client job)
+
+- Worker service uses `Dockerfile` and runs `worker.py` (long-lived).
+- Client job uses `Dockerfile.client` and runs `client_job.py` (one-shot).
+
+Example job setup (env-driven wrapper):
+
+```bash
+gcloud run jobs create marketflow-client \
+  --image gcr.io/$PROJECT_ID/marketflow-client \
+  --region us-central1 \
+  --service-account 875978034496-compute@developer.gserviceaccount.com \
+  --set-env-vars \
+TICKERS=AA,NUE,START_DATE=2024-01-01,END_DATE=2024-01-31,\
+INTRADAY_FREQUENCY=daily,FUNDAMENTALS_MODE=prod,INTRADAY_MODE=prod,\
+TEMPORAL_ADDRESS=temporal.sbecipher.io:7233,TEMPORAL_TASK_QUEUE=marketio-task-queue
+
+gcloud run jobs execute marketflow-client --region us-central1
+```
+
+## Cloud Scheduler trigger examples (Cloud Run Jobs)
+
+Prereqs:
+
+- Enable Cloud Scheduler in the project.
+- Grant the scheduler service account permission to run jobs (`run.jobs.run`), e.g. `roles/run.developer`.
+
+Example 1: trigger the job on a schedule with the job defaults (no overrides):
+
+```bash
+gcloud scheduler jobs create http marketflow-client-daily \
+  --location us-central1 \
+  --schedule "0 5 * * *" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/marketflow-client:run" \
+  --http-method POST \
+  --oauth-service-account-email scheduler@${PROJECT_ID}.iam.gserviceaccount.com \
+  --oauth-token-scope https://www.googleapis.com/auth/cloud-platform
+```
+
+Example 2: trigger with per-run env overrides (no job update required):
+
+```bash
+cat > /tmp/marketflow-client-overrides.json <<'EOF'
+{
+  "overrides": {
+    "containerOverrides": [
+      {
+        "env": [
+          { "name": "TICKERS", "value": "AA,NUE" },
+          { "name": "START_DATE", "value": "2024-01-01" },
+          { "name": "END_DATE", "value": "2024-01-31" },
+          { "name": "FUNDAMENTALS_MODE", "value": "prod" },
+          { "name": "INTRADAY_MODE", "value": "prod" },
+          { "name": "INTRADAY_FREQUENCY", "value": "daily" }
+        ]
+      }
+    ]
+  }
+}
+EOF
+
+gcloud scheduler jobs create http marketflow-client-monthly \
+  --location us-central1 \
+  --schedule "0 6 1 * *" \
+  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/marketflow-client:run" \
+  --http-method POST \
+  --oauth-service-account-email scheduler@${PROJECT_ID}.iam.gserviceaccount.com \
+  --oauth-token-scope https://www.googleapis.com/auth/cloud-platform \
+  --headers "Content-Type: application/json" \
+  --message-body "$(cat /tmp/marketflow-client-overrides.json)"
+```
+
 ## Start a workflow
 
 ```bash
