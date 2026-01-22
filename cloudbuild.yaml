@@ -1,0 +1,42 @@
+substitutions:
+  _REGION: us-central1
+  _SERVICE_NAME: marketflow-worker
+  _IMAGE: gcr.io/$PROJECT_ID/marketflow-worker
+  _SERVICE_ACCOUNT: 875978034496-compute@developer.gserviceaccount.com
+  _TEMPORAL_ADDRESS: temporal.sbecipher.io:7233
+  _MARKETIO_API_URL: https://marketio-875978034496.us-central1.run.app
+  _INTRINIO_SECRET: marketio-data-api-intrinio
+  _MIN_INSTANCES: "1"
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "$_IMAGE:$SHORT_SHA", "."]
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "$_IMAGE:$SHORT_SHA"]
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      [
+        "run",
+        "deploy",
+        "$_SERVICE_NAME",
+        "--image",
+        "$_IMAGE:$SHORT_SHA",
+        "--region",
+        "$_REGION",
+        "--platform",
+        "managed",
+        "--service-account",
+        "$_SERVICE_ACCOUNT",
+        "--set-env-vars",
+        "MARKETIO_API_URL=$_MARKETIO_API_URL,TEMPORAL_ADDRESS=$_TEMPORAL_ADDRESS,UPLOAD_ENABLED=true",
+        "--set-secrets",
+        "INTRINIO_API_KEY=$_INTRINIO_SECRET:latest",
+        "--min-instances",
+        "$_MIN_INSTANCES",
+        "--no-cpu-throttling",
+        "--quiet",
+      ]
+
+images:
+  - "$_IMAGE:$SHORT_SHA"

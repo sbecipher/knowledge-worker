@@ -16,6 +16,8 @@ FETCH_FUNDAMENTALS_PROD = "fetch_fundamentals_prod"
 FETCH_INTRADAY_RAW = "fetch_intraday_raw"
 FETCH_INTRADAY_PROD = "fetch_intraday_prod"
 
+MAX_CONCURRENT_TICKERS = 5
+
 # Retry policies tuned for HTTP work
 SHORT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=5),
@@ -69,14 +71,15 @@ class MarketDataWorkflow:
         if metadata_only:
             return results
 
-        companies = []
+        ticker_ciks: Dict[str, str] = {}
         if isinstance(metadata_result, dict):
-            companies = metadata_result.get("companies") or []
-        ticker_ciks = {
-            (item.get("ticker") or "").upper(): str(item.get("cik")).zfill(10)
-            for item in companies
-            if isinstance(item, dict) and item.get("ticker") and item.get("cik")
-        }
+            ciks_map = metadata_result.get("ciks") or {}
+            if isinstance(ciks_map, dict):
+                ticker_ciks = {
+                    str(ticker).upper(): str(cik).zfill(10)
+                    for ticker, cik in ciks_map.items()
+                    if ticker and cik
+                }
 
         do_edgar = edgar_only or edgar_source
         do_fundamentals = fundamentals_mode in {"raw", "stage", "prod"} and not edgar_only
@@ -152,7 +155,13 @@ class MarketDataWorkflow:
             ticker_results["intraday_prod"] = intraday_prod
             return ticker_results
 
-        tasks = [process_ticker(ticker) for ticker in tickers]
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_TICKERS)
+
+        async def process_ticker_limited(ticker: str) -> Dict[str, List[dict]]:
+            async with semaphore:
+                return await process_ticker(ticker)
+
+        tasks = [process_ticker_limited(ticker) for ticker in tickers]
         ticker_outputs = await asyncio.gather(*tasks)
         for ticker, output in zip(tickers, ticker_outputs):
             results[ticker] = output

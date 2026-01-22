@@ -4,10 +4,10 @@ Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR sub
 
 ## Prerequisites
 
-- Python 3.9+
+- Python 3.13+
 - Temporal server (e.g., `temporal server start-dev`)
 - Marketio API running (e.g., `uvicorn app.main:app --reload`)
-- GCS bucket + service account key for uploads
+- GCS bucket + workload identity on the Cloud Run service account for uploads
 
 ## Install
 
@@ -27,10 +27,12 @@ export INSTRUMENT=ssga-xme
 export MODEL_VERSION=1125v
 export TEMP_DIR=tmp
 export UPLOAD_ENABLED=true
-export GCS_SERVICE_ACCOUNT_KEY_PATH=/path/to/key.json
 export INTRINIO_API_KEY=your_key                # required for metadata/fundamentals
-export TEMPORAL_ADDRESS=localhost:7233
+export TEMPORAL_ADDRESS=temporal.sbecipher.io:7233
 export TEMPORAL_TASK_QUEUE=market-data-task-queue
+export LOG_LEVEL=INFO
+export HEALTHCHECK_PORT=8080                    # optional; defaults to PORT when set
+export MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
 ```
 
 ## GCS layout (hierarchical)
@@ -52,9 +54,36 @@ Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Stage is required for f
 
 ## Run the worker
 
+1) Export the required env vars (see above) or use a local `.env`.
+2) Start the worker:
+
 ```bash
 python worker.py
 ```
+
+3) Optional health check (only if `HEALTHCHECK_PORT` or `PORT` is set):
+
+```bash
+curl -s http://localhost:8080/healthz
+```
+
+Keep the worker running and start workflows from another terminal using `client.py`.
+
+## Container build
+
+```bash
+docker build -t marketflow-worker .
+docker run --rm -p 8080:8080 --env-file .env marketflow-worker
+```
+
+## Cloud Build / Cloud Run
+
+`cloudbuild.yaml` builds and deploys a container image on each trigger. Configure the Cloud Run
+service with the required environment variables and set a minimum instance count so the worker
+does not scale to zero.
+
+Cloud Run uses workload identity, so no service account JSON key is needed. The Cloud Run
+service account must have access to the GCS bucket and Secret Manager.
 
 ## Start a workflow
 

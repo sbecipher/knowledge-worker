@@ -117,7 +117,6 @@ async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[
         "uri": uri,
         "object_path": object_path,
         "record_count": len(data),
-        "companies": data,
         "ciks": cik_map,
     }
 
@@ -180,7 +179,7 @@ async def fetch_edgar_source(
         layer="source",
         dataset="edgar",
         extra_meta={"edgar_source": "true"},
-        include_full_artifact=True,
+        include_full_artifact=False,
     )
 
 
@@ -194,6 +193,16 @@ def _save_artifacts(
 ) -> List[dict]:
     summaries: List[dict] = []
     for artifact in artifacts:
+        data_items = artifact.get("data")
+        record_count = 0
+        if isinstance(data_items, list):
+            record_count = len(data_items)
+        else:
+            raw_record_count = artifact.get("record_count")
+            if isinstance(raw_record_count, int):
+                record_count = raw_record_count
+            elif isinstance(raw_record_count, str) and raw_record_count.isdigit():
+                record_count = int(raw_record_count)
         ticker = artifact.get("ticker") or ""
         start_date = artifact.get("start_date")
         end_date = artifact.get("end_date")
@@ -229,13 +238,13 @@ def _save_artifacts(
                 "start_date": start_date,
                 "end_date": end_date,
                 "frequency": freq or artifact.get("frequency"),
-                "record_count": len(artifact.get("data", [])),
+                "record_count": record_count,
             }
         summary["object_path"] = object_path
         summary["uri"] = uri
         summary["local_path"] = str(local_path)
         if "record_count" not in summary:
-            summary["record_count"] = len(artifact.get("data", []))
+            summary["record_count"] = record_count
         summaries.append(summary)
     return summaries
 
