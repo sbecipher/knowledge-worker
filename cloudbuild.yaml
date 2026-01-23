@@ -5,7 +5,7 @@ substitutions:
   _WORKER_IMAGE: gcr.io/$PROJECT_ID/marketflow-worker
   _CLIENT_IMAGE: gcr.io/$PROJECT_ID/marketflow-client
   _SERVICE_ACCOUNT: 875978034496-compute@developer.gserviceaccount.com
-  _TEMPORAL_ADDRESS: temporal.sbecipher.io:7233
+  _TEMPORAL_ADDRESS: 172.0.0.4:7233
   _TEMPORAL_TASK_QUEUE: marketio-task-queue
   _MARKETIO_API_URL: https://marketio-875978034496.us-central1.run.app
   _INTRINIO_SECRET: marketio-data-api-intrinio
