@@ -156,6 +156,12 @@ chmod +x scripts/deploy.sh
 APP_DIR=/opt/marketflow ./scripts/deploy.sh
 ```
 
+To update the image tag and deploy in one step:
+
+```bash
+APP_DIR=/opt/marketflow ./scripts/deploy.sh --tag v1.0.0
+```
+
 ## VM install checklist (Debian 13 trixie, compose + systemd)
 
 ```bash
