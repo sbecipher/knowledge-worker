@@ -19,8 +19,6 @@ from activities import (
 )
 from config import load_settings
 from workflows import MarketDataWorkflow
-
-SETTINGS = load_settings()
 logger = logging.getLogger(__name__)
 
 
@@ -59,10 +57,21 @@ def _start_health_server() -> None:
 
 async def main() -> None:
     _start_health_server()
-    client = await Client.connect(SETTINGS.temporal_address)
+    settings = load_settings()
+    env_temporal = os.getenv("TEMPORAL_ADDRESS")
+    logger.info(
+        "Temporal address resolved to %s (env TEMPORAL_ADDRESS=%r)",
+        settings.temporal_address,
+        env_temporal,
+    )
+    if os.getenv("K_SERVICE") and settings.temporal_address in {"localhost:7233", "127.0.0.1:7233"}:
+        raise RuntimeError(
+            "TEMPORAL_ADDRESS is not set for Cloud Run; refusing to connect to localhost."
+        )
+    client = await Client.connect(settings.temporal_address)
     worker = Worker(
         client,
-        task_queue=SETTINGS.temporal_task_queue,
+        task_queue=settings.temporal_task_queue,
         workflows=[MarketDataWorkflow],
         activities=[
             check_marketio_health,
@@ -77,8 +86,8 @@ async def main() -> None:
     )
     logger.info(
         "Worker started for task queue '%s', connecting to %s",
-        SETTINGS.temporal_task_queue,
-        SETTINGS.temporal_address,
+        settings.temporal_task_queue,
+        settings.temporal_address,
     )
     await worker.run()
 
