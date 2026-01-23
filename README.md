@@ -86,6 +86,7 @@ server. The compose file uses host networking so the worker can reach
 ```bash
 # Example env file (required values shown)
 cat > .env.worker <<'EOF'
+MARKETFLOW_WORKER_IMAGE=sbecipher/marketflow-worker:v1.0.0
 TEMPORAL_ADDRESS=127.0.0.1:7233
 TEMPORAL_TASK_QUEUE=marketio-task-queue
 MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
@@ -176,6 +177,7 @@ sudo cp -R . /opt/marketflow
 
 # 3) Create env file
 sudo tee /opt/marketflow/.env.worker >/dev/null <<'EOF'
+MARKETFLOW_WORKER_IMAGE=sbecipher/marketflow-worker:v1.0.0
 TEMPORAL_ADDRESS=127.0.0.1:7233
 TEMPORAL_TASK_QUEUE=marketio-task-queue
 MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
