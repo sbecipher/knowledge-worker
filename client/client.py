@@ -92,7 +92,7 @@ def _parse_tickers(raw: str) -> List[str]:
     return [t.strip().upper() for t in raw.split(",") if t.strip()]
 
 
-async def run_with_args(args: argparse.Namespace) -> None:
+async def start_workflow(args: argparse.Namespace) -> dict:
     now_utc = datetime.now(timezone.utc)
     workflow_id = args.workflow_id or f"market_data_{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
     task_queue = args.task_queue or _env_or("TEMPORAL_TASK_QUEUE", DEFAULT_TASK_QUEUE)
@@ -104,7 +104,7 @@ async def run_with_args(args: argparse.Namespace) -> None:
         args.edgar_source = True
 
     client = await Client.connect(address)
-    execution = await client.start_workflow(
+    handle = await client.start_workflow(
         workflow_name,
         args=[
             tickers,
@@ -120,11 +120,33 @@ async def run_with_args(args: argparse.Namespace) -> None:
         id=workflow_id,
         task_queue=task_queue,
     )
+    return {
+        "workflow_id": workflow_id,
+        "run_id": handle.run_id,
+        "workflow_name": workflow_name,
+        "task_queue": task_queue,
+        "address": address,
+        "tickers": tickers,
+        "start_date": args.start_date,
+        "end_date": args.end_date,
+        "intraday_frequency": args.intraday_frequency,
+        "fundamentals_mode": args.fundamentals_mode,
+        "intraday_mode": args.intraday_mode,
+        "edgar_source": args.edgar_source,
+        "metadata_only": args.metadata_only,
+        "edgar_only": args.edgar_only,
+    }
+
+
+async def run_with_args(args: argparse.Namespace) -> None:
+    result = await start_workflow(args)
     print(
-        f"Started workflow {workflow_id} ({execution.id}) for tickers={tickers} "
-        f"window={args.start_date}..{args.end_date} intraday_freq={args.intraday_frequency} "
-        f"fundamentals_mode={args.fundamentals_mode} intraday_mode={args.intraday_mode} "
-        f"edgar_source={args.edgar_source} metadata_only={args.metadata_only} edgar_only={args.edgar_only}"
+        "Started workflow "
+        f"{result['workflow_id']} (run_id={result['run_id']}) for tickers={result['tickers']} "
+        f"window={result['start_date']}..{result['end_date']} "
+        f"intraday_freq={result['intraday_frequency']} fundamentals_mode={result['fundamentals_mode']} "
+        f"intraday_mode={result['intraday_mode']} edgar_source={result['edgar_source']} "
+        f"metadata_only={result['metadata_only']} edgar_only={result['edgar_only']}"
     )
 
 

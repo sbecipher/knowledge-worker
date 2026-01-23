@@ -55,3 +55,35 @@ Modes:
   `python client.py --tickers AA,NUE --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode prod --intraday-frequency daily`
 - Fundamentals only:  
   `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode none`
+
+## Cloud Function stub
+
+`function.py` exposes `marketflow_handler` for HTTP-triggered Cloud Functions.
+Send JSON (or query params) with the same fields as the CLI flags.
+
+Deploy example:
+
+```bash
+gcloud functions deploy marketflow-client \
+  --runtime python311 \
+  --entry-point marketflow_handler \
+  --trigger-http \
+  --allow-unauthenticated \
+  --source .
+```
+
+Request example:
+
+```bash
+curl -X POST "$FUNCTION_URL" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tickers": ["AA", "NUE"],
+    "start_date": "2024-01-01",
+    "end_date": "2024-01-31",
+    "intraday_frequency": "daily",
+    "fundamentals_mode": "prod",
+    "intraday_mode": "prod",
+    "edgar_source": false
+  }'
+```

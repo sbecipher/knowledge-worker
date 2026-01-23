@@ -178,6 +178,8 @@ tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,e
 ```
 
 See `client/README.md` for local CLI usage and examples.
+`client/function.py` exposes the `marketflow_handler` HTTP entrypoint for Cloud
+Functions.
 
 ## What the workflow does (per ticker)
 
