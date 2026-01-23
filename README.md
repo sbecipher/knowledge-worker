@@ -156,6 +156,38 @@ chmod +x scripts/deploy.sh
 APP_DIR=/opt/marketflow ./scripts/deploy.sh
 ```
 
+## VM install checklist (Debian 13 trixie, compose + systemd)
+
+```bash
+# 1) Install Docker + Compose plugin
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-plugin
+sudo systemctl enable --now docker
+
+# 2) Create app directory and copy repo
+sudo mkdir -p /opt/marketflow
+sudo cp -R . /opt/marketflow
+
+# 3) Create env file
+sudo tee /opt/marketflow/.env.worker >/dev/null <<'EOF'
+TEMPORAL_ADDRESS=127.0.0.1:7233
+TEMPORAL_TASK_QUEUE=marketio-task-queue
+MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
+INTRINIO_API_KEY=your_key
+GCS_BUCKET=sbecipher-intelligence
+UPLOAD_ENABLED=true
+EOF
+
+# 4) Docker Hub auth + pull
+sudo docker login
+sudo docker compose --env-file /opt/marketflow/.env.worker -f /opt/marketflow/docker-compose.worker.yml pull
+
+# 5) Install systemd unit and start
+sudo cp /opt/marketflow/systemd/marketflow-worker.service /etc/systemd/system/marketflow-worker.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now marketflow-worker
+```
+
 ## Client (Cloud Function)
 
 The workflow starter now lives in `client/` so it can be deployed separately
