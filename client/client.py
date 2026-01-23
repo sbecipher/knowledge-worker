@@ -1,12 +1,23 @@
 import argparse
 import asyncio
+import os
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from temporalio.client import Client
 
-from config import load_settings
-from workflows import MarketDataWorkflow
+DEFAULT_TASK_QUEUE = "marketio-task-queue"
+DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
+DEFAULT_WORKFLOW_NAME = "MarketDataWorkflow"
+
+
+def _env_str(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+
+def _env_or(name: str, default: str) -> str:
+    value = _env_str(name)
+    return value if value else default
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
@@ -46,10 +57,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Workflow ID (defaults to market_data_{timestamp})",
     )
     parser.add_argument(
+        "--workflow-name",
+        type=str,
+        default=None,
+        help="Workflow name (defaults to env/TEMPORAL_WORKFLOW or MarketDataWorkflow)",
+    )
+    parser.add_argument(
         "--task-queue",
         type=str,
         default=None,
-        help="Temporal task queue (defaults to env/TEMPORAL_TASK_QUEUE or market-data-task-queue)",
+        help=f"Temporal task queue (defaults to env/TEMPORAL_TASK_QUEUE or {DEFAULT_TASK_QUEUE})",
     )
     parser.add_argument(
         "--address",
@@ -76,12 +93,11 @@ def _parse_tickers(raw: str) -> List[str]:
 
 
 async def run_with_args(args: argparse.Namespace) -> None:
-    settings = load_settings()
-
     now_utc = datetime.now(timezone.utc)
     workflow_id = args.workflow_id or f"market_data_{now_utc.strftime('%Y%m%dT%H%M%SZ')}"
-    task_queue = args.task_queue or settings.temporal_task_queue
-    address = args.address or settings.temporal_address
+    task_queue = args.task_queue or _env_or("TEMPORAL_TASK_QUEUE", DEFAULT_TASK_QUEUE)
+    address = args.address or _env_or("TEMPORAL_ADDRESS", DEFAULT_TEMPORAL_ADDRESS)
+    workflow_name = args.workflow_name or _env_or("TEMPORAL_WORKFLOW", DEFAULT_WORKFLOW_NAME)
 
     tickers = _parse_tickers(args.tickers)
     if args.edgar_only:
@@ -89,7 +105,7 @@ async def run_with_args(args: argparse.Namespace) -> None:
 
     client = await Client.connect(address)
     execution = await client.start_workflow(
-        MarketDataWorkflow.run,
+        workflow_name,
         args=[
             tickers,
             args.start_date,

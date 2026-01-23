@@ -64,10 +64,6 @@ async def main() -> None:
         settings.temporal_address,
         env_temporal,
     )
-    if os.getenv("K_SERVICE") and settings.temporal_address in {"localhost:7233", "127.0.0.1:7233"}:
-        raise RuntimeError(
-            "TEMPORAL_ADDRESS is not set for Cloud Run; refusing to connect to localhost."
-        )
     client = await Client.connect(settings.temporal_address)
     worker = Worker(
         client,

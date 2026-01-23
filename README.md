@@ -7,7 +7,7 @@ Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR sub
 - Python 3.13+
 - Temporal server (e.g., `temporal server start-dev`)
 - Marketio API running (e.g., `uvicorn app.main:app --reload`)
-- GCS bucket + workload identity on the Cloud Run service account for uploads
+- GCS bucket + credentials (service account JSON or workload identity on VM) for uploads
 
 ## Install
 
@@ -28,11 +28,11 @@ export MODEL_VERSION=1125v
 export TEMP_DIR=tmp
 export UPLOAD_ENABLED=true
 export INTRINIO_API_KEY=your_key                # required for metadata/fundamentals
-export TEMPORAL_ADDRESS=temporal.sbecipher.io:7233
+export TEMPORAL_ADDRESS=127.0.0.1:7233
 export TEMPORAL_TASK_QUEUE=market-data-task-queue
 export LOG_LEVEL=INFO
 export HEALTHCHECK_PORT=8080                    # optional; defaults to PORT when set
-export MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
+# Use the public Marketio URL on a VM if needed.
 ```
 
 ## GCS layout (hierarchical)
@@ -67,7 +67,8 @@ python worker.py
 curl -s http://localhost:8080/healthz
 ```
 
-Keep the worker running and start workflows from another terminal using `client.py`.
+Keep the worker running and start workflows from another terminal using the
+client in `client/client.py` (or your Cloud Function).
 
 ## Container build
 
@@ -76,123 +77,107 @@ docker build -t marketflow-worker .
 docker run --rm -p 8080:8080 --env-file .env marketflow-worker
 ```
 
-## Cloud Build / Cloud Run
+## Run worker on the Temporal VM (Docker Compose)
 
-`cloudbuild.yaml` builds and deploys a container image on each trigger. Configure the Cloud Run
-service with the required environment variables and set a minimum instance count so the worker
-does not scale to zero.
-
-Cloud Run uses workload identity, so no service account JSON key is needed. The Cloud Run
-service account must have access to the GCS bucket and Secret Manager.
-
-## Cloud Run targets (worker service + client job)
-
-- Worker service uses `Dockerfile` and runs `worker.py` (long-lived).
-- Client job uses `Dockerfile.client` and runs `client_job.py` (one-shot).
-
-Example job setup (env-driven wrapper):
+Use the worker container as a long-lived service on the same VM as the Temporal
+server. The compose file uses host networking so the worker can reach
+`127.0.0.1:7233` on the VM.
 
 ```bash
-gcloud run jobs create marketflow-client \
-  --image gcr.io/$PROJECT_ID/marketflow-client \
-  --region us-central1 \
-  --service-account 875978034496-compute@developer.gserviceaccount.com \
-  --set-env-vars \
-TICKERS=AA,NUE,START_DATE=2024-01-01,END_DATE=2024-01-31,\
-INTRADAY_FREQUENCY=daily,FUNDAMENTALS_MODE=prod,INTRADAY_MODE=prod,\
-TEMPORAL_ADDRESS=temporal.sbecipher.io:7233,TEMPORAL_TASK_QUEUE=marketio-task-queue
-
-gcloud run jobs execute marketflow-client --region us-central1
-```
-
-## Cloud Scheduler trigger examples (Cloud Run Jobs)
-
-Prereqs:
-
-- Enable Cloud Scheduler in the project.
-- Grant the scheduler service account permission to run jobs (`run.jobs.run`), e.g. `roles/run.developer`.
-
-Example 1: trigger the job on a schedule with the job defaults (no overrides):
-
-```bash
-gcloud scheduler jobs create http marketflow-client-daily \
-  --location us-central1 \
-  --schedule "0 5 * * *" \
-  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/marketflow-client:run" \
-  --http-method POST \
-  --oauth-service-account-email scheduler@${PROJECT_ID}.iam.gserviceaccount.com \
-  --oauth-token-scope https://www.googleapis.com/auth/cloud-platform
-```
-
-Example 2: trigger with per-run env overrides (no job update required):
-
-```bash
-cat > /tmp/marketflow-client-overrides.json <<'EOF'
-{
-  "overrides": {
-    "containerOverrides": [
-      {
-        "env": [
-          { "name": "TICKERS", "value": "AA,NUE" },
-          { "name": "START_DATE", "value": "2024-01-01" },
-          { "name": "END_DATE", "value": "2024-01-31" },
-          { "name": "FUNDAMENTALS_MODE", "value": "prod" },
-          { "name": "INTRADAY_MODE", "value": "prod" },
-          { "name": "INTRADAY_FREQUENCY", "value": "daily" }
-        ]
-      }
-    ]
-  }
-}
+# Example env file (required values shown)
+cat > .env.worker <<'EOF'
+TEMPORAL_ADDRESS=127.0.0.1:7233
+TEMPORAL_TASK_QUEUE=marketio-task-queue
+MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
+INTRINIO_API_KEY=your_key
+GCS_BUCKET=sbecipher-intelligence
+UPLOAD_ENABLED=true
 EOF
 
-gcloud scheduler jobs create http marketflow-client-monthly \
-  --location us-central1 \
-  --schedule "0 6 1 * *" \
-  --uri "https://run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/marketflow-client:run" \
-  --http-method POST \
-  --oauth-service-account-email scheduler@${PROJECT_ID}.iam.gserviceaccount.com \
-  --oauth-token-scope https://www.googleapis.com/auth/cloud-platform \
-  --headers "Content-Type: application/json" \
-  --message-body "$(cat /tmp/marketflow-client-overrides.json)"
+# Uses host networking so 127.0.0.1 resolves to the VM's Temporal server.
+docker compose --env-file .env.worker -f docker-compose.worker.yml up -d
 ```
 
-## Start a workflow
+Notes:
+- Host networking is supported on Linux (works well on a VM). On macOS/Windows,
+  use a Docker network instead and set `TEMPORAL_ADDRESS` to the Temporal service name.
+
+## Push a private image to Docker Hub
+
+1) Create a private repo on Docker Hub, e.g. `sbecipher/marketflow-worker`.
+2) Authenticate and push:
 
 ```bash
-python client.py \
-  --tickers AA,NUE \
-  --start-date 2020-01-01 \
-  --end-date 2020-12-31 \
-  --intraday-frequency daily \
-  --fundamentals-mode prod \
-  --intraday-mode prod \
-  --edgar-source             # optional: pull SEC submissions (source=True)
+docker login
+docker build -t sbecipher/marketflow-worker:latest .
+docker push sbecipher/marketflow-worker:latest
 ```
 
-Modes:
+3) If you want to pin a release tag:
 
-- Fundamentals: `raw` (source only), `stage` (processed), `prod` (stage → prod), `none` (skip fundamentals)
-- Intraday: `raw` (source), `prod` (raw → prod), `none` (skip intraday)
-- EDGAR: toggled via `--edgar-source` to fetch SEC submissions (source=True) per ticker or `--edgar-only` to fetch just EDGAR
-- Metadata-only: `--metadata-only` fetches just metadata and exits early
+```bash
+docker tag sbecipher/marketflow-worker:latest sbecipher/marketflow-worker:v1.0.0
+docker push sbecipher/marketflow-worker:v1.0.0
+```
 
-Fundamentals honor the workflow `--start-date/--end-date` window (with `filed_after` nudged forward only if the company’s first trade date is later).
+4) Update the VM to pull the private image:
 
-### Common runs
+```bash
+docker login
+docker compose --env-file .env.worker -f docker-compose.worker.yml pull
+docker compose --env-file .env.worker -f docker-compose.worker.yml up -d
+```
 
-- Intraday only (skip fundamentals):  
-  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode none --intraday-mode prod --intraday-frequency daily`
-- Metadata only:  
-  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode none --intraday-mode none --metadata-only`
-- EDGAR only (raw SEC submissions):  
-  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode none --intraday-mode none --edgar-only`
-- Metadata + EDGAR submissions (adds SEC submissions to the regular fundamentals run):  
-  `python client.py --tickers AA --start-date 2024-01-01 --end-date 2024-12-31 --fundamentals-mode prod --intraday-mode none --edgar-source`
-- Fundamentals + Intraday (full run):  
-  `python client.py --tickers AA,NUE --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode prod --intraday-frequency daily`
-- Fundamentals only:  
-  `python client.py --tickers AA --start-date 2025-11-01 --end-date 2025-12-31 --fundamentals-mode prod --intraday-mode none`
+## Run the worker via systemd (auto-start on boot)
+
+The repo includes a systemd unit template at `systemd/marketflow-worker.service`.
+Copy it to the VM, adjust the paths if needed, then enable it:
+
+```bash
+sudo mkdir -p /opt/marketflow
+sudo cp -R . /opt/marketflow
+sudo cp systemd/marketflow-worker.service /etc/systemd/system/marketflow-worker.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now marketflow-worker
+```
+
+To refresh after pulling a new image:
+
+```bash
+sudo systemctl restart marketflow-worker
+```
+
+## VM deploy helper script
+
+Use the helper to pull the latest image and restart the worker:
+
+```bash
+chmod +x scripts/deploy.sh
+APP_DIR=/opt/marketflow ./scripts/deploy.sh
+```
+
+## Client (Cloud Function)
+
+The workflow starter now lives in `client/` so it can be deployed separately
+(for example, as a Cloud Function in another project). The client uses the
+Temporal gRPC address and task queue from environment variables; all run-specific
+parameters can be passed via the request payload to your function.
+
+Minimum connection settings:
+
+```bash
+TEMPORAL_ADDRESS=temporal.sbecipher.io:7233
+TEMPORAL_TASK_QUEUE=marketio-task-queue
+TEMPORAL_WORKFLOW=MarketDataWorkflow
+```
+
+Inputs to pass per run (query/body → function args):
+
+```text
+tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,edgar_source,metadata_only,edgar_only,workflow_id
+```
+
+See `client/README.md` for local CLI usage and examples.
 
 ## What the workflow does (per ticker)
 

@@ -1,0 +1,18 @@
+services:
+  marketflow-worker:
+    image: ${MARKETFLOW_WORKER_IMAGE:-sbecipher/marketflow-worker:latest}
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-127.0.0.1:7233}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-marketio-task-queue}
+      MARKETIO_API_URL: ${MARKETIO_API_URL:-http://127.0.0.1:8000}
+      GCS_BUCKET: ${GCS_BUCKET:-sbecipher-intelligence}
+      GCS_PREFIX: ${GCS_PREFIX:-}
+      INSTRUMENT: ${INSTRUMENT:-ssga-xme}
+      MODEL_VERSION: ${MODEL_VERSION:-ssga-xme-metadata-v1225}
+      TEMP_DIR: ${TEMP_DIR:-tmp}
+      UPLOAD_ENABLED: ${UPLOAD_ENABLED:-true}
+      INTRINIO_API_KEY: ${INTRINIO_API_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PORT: 8080
