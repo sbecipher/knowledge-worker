@@ -1,0 +1,15 @@
+[Unit]
+Description=Marketflow Worker (Docker Compose)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/marketflow
+ExecStart=/usr/bin/docker compose --env-file /opt/marketflow/.env.worker -f /opt/marketflow/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose --env-file /opt/marketflow/.env.worker -f /opt/marketflow/docker-compose.yml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

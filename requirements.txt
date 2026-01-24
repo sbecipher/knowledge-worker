@@ -1,3 +1,4 @@
 temporalio>=1.0.0
 httpx
 google-cloud-storage
+google-cloud-secret-manager

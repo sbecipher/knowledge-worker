@@ -18,10 +18,14 @@ UPLOADER = GCSUploader(
     enabled=SETTINGS.upload_enabled,
 )
 
+_INTRINIO_HEADERS = (
+    {"X-Intrinio-Api-Key": SETTINGS.intrinio_api_key} if SETTINGS.intrinio_api_key else {}
+)
+
 
 def _make_client(stream: bool = False) -> httpx.AsyncClient:
     timeout = SETTINGS.http_stream_timeout if stream else SETTINGS.http_timeout
-    return httpx.AsyncClient(timeout=timeout)
+    return httpx.AsyncClient(timeout=timeout, headers=_INTRINIO_HEADERS)
 
 
 def _temp_path(object_path: str) -> Path:

@@ -3,8 +3,8 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/marketflow}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env.worker}"
-COMPOSE_FILE="${COMPOSE_FILE:-$APP_DIR/docker-compose.worker.yml}"
-SERVICE_NAME="${SERVICE_NAME:-marketflow-worker}"
+COMPOSE_FILE="${COMPOSE_FILE:-$APP_DIR/docker-compose.yml}"
+SERVICE_NAME="${SERVICE_NAME:-marketflow}"
 IMAGE_REPO_DEFAULT="${MARKETFLOW_WORKER_IMAGE_REPO:-sbecipher/marketflow-worker}"
 TAG_OVERRIDE=""
 

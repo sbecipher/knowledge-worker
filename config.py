@@ -4,6 +4,8 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+from google.cloud import secretmanager
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -30,6 +32,16 @@ def _load_gcs_service_account_json() -> str:
         raise ValueError(f"GCS service account key path not found: {path_value}") from exc
 
 
+def _load_intrinio_api_key() -> str:
+    secret_name = "projects/875978034496/secrets/marketio-data-api-intrinio/versions/latest"
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        response = client.access_secret_version(request={"name": secret_name})
+        return response.payload.data.decode("utf-8").strip()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Failed to load Intrinio API key from Secret Manager: {exc}") from exc
+
+
 @dataclass
 class Settings:
     """
@@ -49,6 +61,7 @@ class Settings:
     temporal_task_queue: str
     temporal_address: str
     run_id: str
+    intrinio_api_key: str
 
 
 def load_settings() -> Settings:
@@ -65,6 +78,7 @@ def load_settings() -> Settings:
     temporal_task_queue = _env_str("TEMPORAL_TASK_QUEUE", "marketio-task-queue")
     temporal_address = _env_str("TEMPORAL_ADDRESS", "localhost:7233")
     run_id = _env_str("RUN_ID", date.today().isoformat())
+    intrinio_api_key = _load_intrinio_api_key()
 
     return Settings(
         marketio_api_url=marketio_api_url,
@@ -80,4 +94,5 @@ def load_settings() -> Settings:
         temporal_task_queue=temporal_task_queue,
         temporal_address=temporal_address,
         run_id=run_id,
+        intrinio_api_key=intrinio_api_key,
     )

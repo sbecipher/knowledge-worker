@@ -13,6 +13,5 @@ services:
       MODEL_VERSION: ${MODEL_VERSION:-ssga-xme-metadata-v1225}
       TEMP_DIR: ${TEMP_DIR:-tmp}
       UPLOAD_ENABLED: ${UPLOAD_ENABLED:-true}
-      INTRINIO_API_KEY: ${INTRINIO_API_KEY}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       PORT: 8080

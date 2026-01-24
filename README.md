@@ -8,6 +8,7 @@ Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR sub
 - Temporal server (e.g., `temporal server start-dev`)
 - Marketio API running (e.g., `uvicorn app.main:app --reload`)
 - GCS bucket + credentials (service account JSON or workload identity on VM) for uploads
+- Secret Manager access to `projects/875978034496/secrets/marketio-data-api-intrinio`
 
 ## Install
 
@@ -27,13 +28,16 @@ export INSTRUMENT=ssga-xme
 export MODEL_VERSION=1125v
 export TEMP_DIR=tmp
 export UPLOAD_ENABLED=true
-export INTRINIO_API_KEY=your_key                # required for metadata/fundamentals
 export TEMPORAL_ADDRESS=127.0.0.1:7233
 export TEMPORAL_TASK_QUEUE=market-data-task-queue
 export LOG_LEVEL=INFO
 export HEALTHCHECK_PORT=8080                    # optional; defaults to PORT when set
 # Use the public Marketio URL on a VM if needed.
 ```
+
+The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
+(`projects/875978034496/secrets/marketio-data-api-intrinio`), so it is not set
+via environment variables.
 
 ## GCS layout (hierarchical)
 
@@ -90,13 +94,12 @@ MARKETFLOW_WORKER_IMAGE=sbecipher/marketflow-worker:v1.0.0
 TEMPORAL_ADDRESS=127.0.0.1:7233
 TEMPORAL_TASK_QUEUE=marketio-task-queue
 MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
-INTRINIO_API_KEY=your_key
 GCS_BUCKET=sbecipher-intelligence
 UPLOAD_ENABLED=true
 EOF
 
 # Uses host networking so 127.0.0.1 resolves to the VM's Temporal server.
-docker compose --env-file .env.worker -f docker-compose.worker.yml up -d
+docker compose --env-file .env.worker -f docker-compose.yml up -d
 ```
 
 Notes:
@@ -125,27 +128,27 @@ docker push sbecipher/marketflow-worker:v1.0.0
 
 ```bash
 docker login
-docker compose --env-file .env.worker -f docker-compose.worker.yml pull
-docker compose --env-file .env.worker -f docker-compose.worker.yml up -d
+docker compose --env-file .env.worker -f docker-compose.yml pull
+docker compose --env-file .env.worker -f docker-compose.yml up -d
 ```
 
 ## Run the worker via systemd (auto-start on boot)
 
-The repo includes a systemd unit template at `systemd/marketflow-worker.service`.
+The repo includes a systemd unit template at `systemd/marketflow.service`.
 Copy it to the VM, adjust the paths if needed, then enable it:
 
 ```bash
 sudo mkdir -p /opt/marketflow
 sudo cp -R . /opt/marketflow
-sudo cp systemd/marketflow-worker.service /etc/systemd/system/marketflow-worker.service
+sudo cp systemd/marketflow.service /etc/systemd/system/marketflow.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now marketflow-worker
+sudo systemctl enable --now marketflow
 ```
 
 To refresh after pulling a new image:
 
 ```bash
-sudo systemctl restart marketflow-worker
+sudo systemctl restart marketflow
 ```
 
 ## VM deploy helper script
@@ -181,19 +184,18 @@ MARKETFLOW_WORKER_IMAGE=sbecipher/marketflow-worker:v1.0.0
 TEMPORAL_ADDRESS=127.0.0.1:7233
 TEMPORAL_TASK_QUEUE=marketio-task-queue
 MARKETIO_API_URL=https://marketio-875978034496.us-central1.run.app
-INTRINIO_API_KEY=your_key
 GCS_BUCKET=sbecipher-intelligence
 UPLOAD_ENABLED=true
 EOF
 
 # 4) Docker Hub auth + pull
 sudo docker login
-sudo docker compose --env-file /opt/marketflow/.env.worker -f /opt/marketflow/docker-compose.worker.yml pull
+sudo docker compose --env-file /opt/marketflow/.env.worker -f /opt/marketflow/docker-compose.yml pull
 
 # 5) Install systemd unit and start
-sudo cp /opt/marketflow/systemd/marketflow-worker.service /etc/systemd/system/marketflow-worker.service
+sudo cp /opt/marketflow/systemd/marketflow.service /etc/systemd/system/marketflow.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now marketflow-worker
+sudo systemctl enable --now marketflow
 ```
 
 ## Client (Cloud Function)
