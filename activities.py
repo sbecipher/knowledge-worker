@@ -1,10 +1,14 @@
 import asyncio
 import logging
 import json
+import base64
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+from google.auth.transport.requests import Request
+from google.oauth2 import id_token
 from temporalio import activity
 
 from config import load_settings
@@ -21,11 +25,24 @@ UPLOADER = GCSUploader(
 _INTRINIO_HEADERS = (
     {"X-Intrinio-Api-Key": SETTINGS.intrinio_api_key} if SETTINGS.intrinio_api_key else {}
 )
+_MARKETIO_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
+_MARKETIO_TOKEN_LOCK = asyncio.Lock()
+_MARKETIO_TOKEN_SKEW_SECONDS = 60
+_MARKETIO_TOKEN_FALLBACK_TTL_SECONDS = 300
 
 
-def _make_client(stream: bool = False) -> httpx.AsyncClient:
+def _make_client(
+    stream: bool = False,
+    headers: Optional[Dict[str, str]] = None,
+    include_intrinio: bool = False,
+) -> httpx.AsyncClient:
     timeout = SETTINGS.http_stream_timeout if stream else SETTINGS.http_timeout
-    return httpx.AsyncClient(timeout=timeout, headers=_INTRINIO_HEADERS)
+    merged_headers: Dict[str, str] = {}
+    if include_intrinio and _INTRINIO_HEADERS:
+        merged_headers.update(_INTRINIO_HEADERS)
+    if headers:
+        merged_headers.update(headers)
+    return httpx.AsyncClient(timeout=timeout, headers=merged_headers)
 
 
 def _temp_path(object_path: str) -> Path:
@@ -66,11 +83,73 @@ def _metadata_base(layer: str, dataset: str, ticker: Optional[str], start: Optio
 
 
 async def _post_json(endpoint: str, payload: Any) -> Any:
-    url = f"{SETTINGS.marketio_api_url}{endpoint}"
-    async with _make_client() as client:
+    base_url = SETTINGS.marketio_api_url.rstrip("/")
+    url = f"{base_url}{endpoint}"
+    headers = await _marketio_auth_headers(base_url)
+    async with _make_client(headers=headers) as client:
         resp = await client.post(url, json=payload)
+        if resp.status_code in {401, 403} and SETTINGS.marketio_require_auth:
+            await resp.aclose()
+            await _invalidate_marketio_token(base_url)
+            headers = await _marketio_auth_headers(base_url)
+            resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return resp.json()
+
+
+async def _marketio_auth_headers(audience: str) -> Dict[str, str]:
+    if not SETTINGS.marketio_require_auth:
+        return {}
+    token = await _get_marketio_token(audience)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _jwt_exp(token: str) -> Optional[int]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload + padding)
+        payload_obj = json.loads(decoded)
+        exp = payload_obj.get("exp")
+        if isinstance(exp, (int, float)):
+            return int(exp)
+        if isinstance(exp, str) and exp.isdigit():
+            return int(exp)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+async def _get_marketio_token(audience: str) -> str:
+    now = int(time.time())
+    cached = _MARKETIO_TOKEN_CACHE.get(audience)
+    if cached:
+        exp = cached.get("exp")
+        if exp and exp - _MARKETIO_TOKEN_SKEW_SECONDS > now:
+            return cached["token"]
+
+    async with _MARKETIO_TOKEN_LOCK:
+        cached = _MARKETIO_TOKEN_CACHE.get(audience)
+        if cached:
+            exp = cached.get("exp")
+            if exp and exp - _MARKETIO_TOKEN_SKEW_SECONDS > now:
+                return cached["token"]
+
+        auth_req = Request()
+        token = await asyncio.to_thread(id_token.fetch_id_token, auth_req, audience)
+        exp = _jwt_exp(token)
+        if exp is None:
+            exp = now + _MARKETIO_TOKEN_FALLBACK_TTL_SECONDS
+        _MARKETIO_TOKEN_CACHE[audience] = {"token": token, "exp": int(exp)}
+        return token
+
+
+async def _invalidate_marketio_token(audience: str) -> None:
+    async with _MARKETIO_TOKEN_LOCK:
+        _MARKETIO_TOKEN_CACHE.pop(audience, None)
 
 
 @activity.defn(name="check_marketio_health")
@@ -80,9 +159,16 @@ async def check_marketio_health() -> None:
     """
     if activity.is_cancelled():
         raise RuntimeError("check_marketio_health cancelled")
-    url = f"{SETTINGS.marketio_api_url}/health"
-    async with _make_client() as client:
+    base_url = SETTINGS.marketio_api_url.rstrip("/")
+    url = f"{base_url}/health"
+    headers = await _marketio_auth_headers(base_url)
+    async with _make_client(headers=headers) as client:
         resp = await client.get(url)
+        if resp.status_code in {401, 403} and SETTINGS.marketio_require_auth:
+            await resp.aclose()
+            await _invalidate_marketio_token(base_url)
+            headers = await _marketio_auth_headers(base_url)
+            resp = await client.get(url, headers=headers)
         resp.raise_for_status()
     activity.heartbeat({"status": "healthy"})
 

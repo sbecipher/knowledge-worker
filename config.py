@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from google.cloud import secretmanager
 
@@ -11,6 +12,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
+    return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_optional_bool(name: str) -> Optional[bool]:
+    value = os.getenv(name)
+    if value is None:
+        return None
     return value.lower() in {"1", "true", "yes", "y", "on"}
 
 
@@ -33,6 +41,11 @@ def _load_gcs_service_account_json() -> str:
 
 
 def _load_intrinio_api_key() -> str:
+    env_key = _env_str("INTRINIO_API_KEY", "")
+    if env_key:
+        return env_key
+    if not _env_bool("INTRINIO_SECRET_MANAGER_ENABLED", True):
+        return ""
     secret_name = "projects/875978034496/secrets/marketio-data-api-intrinio/versions/latest"
     try:
         client = secretmanager.SecretManagerServiceClient()
@@ -42,6 +55,16 @@ def _load_intrinio_api_key() -> str:
         raise ValueError(f"Failed to load Intrinio API key from Secret Manager: {exc}") from exc
 
 
+def _infer_marketio_auth(api_url: str) -> bool:
+    parsed = urlparse(api_url)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        return False
+    if hostname in {"localhost", "127.0.0.1"}:
+        return False
+    return True
+
+
 @dataclass
 class Settings:
     """
@@ -49,6 +72,7 @@ class Settings:
     """
 
     marketio_api_url: str
+    marketio_require_auth: bool
     gcs_bucket: Optional[str]
     gcs_prefix: str
     instrument: str
@@ -66,6 +90,9 @@ class Settings:
 
 def load_settings() -> Settings:
     marketio_api_url = _env_str("MARKETIO_API_URL", "http://localhost:8000").rstrip("/")
+    marketio_require_auth = _env_optional_bool("MARKETIO_REQUIRE_AUTH", True)
+    if marketio_require_auth is None:
+        marketio_require_auth = _infer_marketio_auth(marketio_api_url)
     gcs_bucket = _env_str("GCS_BUCKET", "sbecipher-intelligence")
     gcs_prefix = _env_str("GCS_PREFIX", "").strip("/")
     instrument = _env_str("INSTRUMENT", "ssga-xme").lower()
@@ -82,6 +109,7 @@ def load_settings() -> Settings:
 
     return Settings(
         marketio_api_url=marketio_api_url,
+        marketio_require_auth=marketio_require_auth,
         gcs_bucket=gcs_bucket,
         gcs_prefix=gcs_prefix,
         instrument=instrument,

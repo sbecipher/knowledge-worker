@@ -22,6 +22,7 @@ pip install -r requirements.txt
 
 ```bash
 export MARKETIO_API_URL=http://localhost:8000
+export MARKETIO_REQUIRE_AUTH=false            # optional; auto-detects https/non-localhost when unset
 export GCS_BUCKET=sbecipher-intelligence
 export GCS_PREFIX=dev            # optional
 export INSTRUMENT=ssga-xme
@@ -32,12 +33,15 @@ export TEMPORAL_ADDRESS=127.0.0.1:7233
 export TEMPORAL_TASK_QUEUE=market-data-task-queue
 export LOG_LEVEL=INFO
 export HEALTHCHECK_PORT=8080                    # optional; defaults to PORT when set
+# Optional Intrinio overrides
+# export INTRINIO_API_KEY=...
+# export INTRINIO_SECRET_MANAGER_ENABLED=false
 # Use the public Marketio URL on a VM if needed.
 ```
 
 The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
-(`projects/875978034496/secrets/marketio-data-api-intrinio`), so it is not set
-via environment variables.
+(`projects/875978034496/secrets/marketio-data-api-intrinio`) unless
+`INTRINIO_SECRET_MANAGER_ENABLED=false` or `INTRINIO_API_KEY` is provided via env.
 
 ## GCS layout (hierarchical)
 
