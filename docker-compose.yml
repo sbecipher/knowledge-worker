@@ -1,5 +1,6 @@
 services:
   marketflow-worker:
+    container_name: marketflow-worker
     image: ${MARKETFLOW_WORKER_IMAGE:-sbecipher/marketflow-worker:latest}
     restart: unless-stopped
     network_mode: "host"
