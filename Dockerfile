@@ -9,6 +9,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV LOG_LEVEL=INFO
-EXPOSE 8080
+EXPOSE 8081
 
 CMD ["python", "worker.py"]

@@ -89,8 +89,8 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    marketio_api_url = _env_str("MARKETIO_API_URL", "http://localhost:8000").rstrip("/")
-    marketio_require_auth = _env_optional_bool("MARKETIO_REQUIRE_AUTH", True)
+    marketio_api_url = _env_str("MARKETIO_API_URL", "https://marketio-875978034496.us-central1.run.app:8000").rstrip("/")
+    marketio_require_auth = _env_optional_bool("MARKETIO_REQUIRE_AUTH")
     if marketio_require_auth is None:
         marketio_require_auth = _infer_marketio_auth(marketio_api_url)
     gcs_bucket = _env_str("GCS_BUCKET", "sbecipher-intelligence")
@@ -103,7 +103,7 @@ def load_settings() -> Settings:
     http_timeout = float(_env_str("HTTP_CLIENT_TIMEOUT", "60"))
     http_stream_timeout = float(_env_str("STREAM_CLIENT_TIMEOUT", "600"))
     temporal_task_queue = _env_str("TEMPORAL_TASK_QUEUE", "marketio-task-queue")
-    temporal_address = _env_str("TEMPORAL_ADDRESS", "localhost:7233")
+    temporal_address = _env_str("TEMPORAL_ADDRESS", "172.0.0.4:7233")
     run_id = _env_str("RUN_ID", date.today().isoformat())
     intrinio_api_key = _load_intrinio_api_key()
 

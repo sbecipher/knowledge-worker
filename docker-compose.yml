@@ -4,9 +4,13 @@ services:
     restart: unless-stopped
     network_mode: "host"
     environment:
-      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-127.0.0.1:7233}
+      # Point the worker at the Temporal frontend (VM internal IP + gRPC port)
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-172.0.0.4:7233}
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-marketio-task-queue}
-      MARKETIO_API_URL: ${MARKETIO_API_URL:-http://127.0.0.1:8000}
+
+      # If Marketio is Cloud Run, use the HTTPS URL (NOT localhost)
+      MARKETIO_API_URL: ${MARKETIO_API_URL:-https://marketio-875978034496.us-central1.run.app}
+
       GCS_BUCKET: ${GCS_BUCKET:-sbecipher-intelligence}
       GCS_PREFIX: ${GCS_PREFIX:-}
       INSTRUMENT: ${INSTRUMENT:-ssga-xme}
@@ -14,4 +18,6 @@ services:
       TEMP_DIR: ${TEMP_DIR:-tmp}
       UPLOAD_ENABLED: ${UPLOAD_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      PORT: 8080
+
+      # Only needed if your worker exposes an HTTP server for health checks/metrics
+      PORT: ${PORT:-8081}
