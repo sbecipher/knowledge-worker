@@ -1,6 +1,6 @@
 import asyncio
 from datetime import timedelta
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -47,6 +47,8 @@ class MarketDataWorkflow:
         edgar_source: bool = False,
         metadata_only: bool = False,
         edgar_only: bool = False,
+        instrument: Optional[str] = None,
+        model_version: Optional[str] = None,
     ) -> Dict[str, List[dict]]:
         """
         Orchestrates metadata, fundamentals (raw->stage->prod), intraday (raw->prod), and optional EDGAR pulls.
@@ -62,7 +64,7 @@ class MarketDataWorkflow:
 
         metadata_result = await workflow.execute_activity(
             FETCH_COMPANIES_METADATA,
-            args=[tickers],
+            args=[tickers, instrument, model_version],
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=SHORT_RETRY,
         )
@@ -96,14 +98,14 @@ class MarketDataWorkflow:
 
             edgar_payload = await workflow.execute_activity(
                 FETCH_EDGAR_SOURCE,
-                args=[edgar_kwargs.get("tickers"), edgar_kwargs.get("ciks")],
+                args=[edgar_kwargs.get("tickers"), edgar_kwargs.get("ciks"), instrument, model_version],
                 start_to_close_timeout=timedelta(minutes=3),
                 retry_policy=LONG_RETRY,
             ) if do_edgar else []
             # Fundamentals path
             fundamentals_raw = await workflow.execute_activity(
                 FETCH_FUNDAMENTALS_RAW,
-                args=[[ticker], start_date, end_date],
+                args=[[ticker], start_date, end_date, instrument, model_version],
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=LONG_RETRY,
             ) if do_fundamentals else []
@@ -111,7 +113,7 @@ class MarketDataWorkflow:
             if fundamentals_mode in {"stage", "prod"} and do_fundamentals:
                 fundamentals_stage = await workflow.execute_activity(
                     FETCH_FUNDAMENTALS_STAGE,
-                    args=[fundamentals_raw],
+                    args=[fundamentals_raw, instrument, model_version],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
                 )
@@ -121,7 +123,7 @@ class MarketDataWorkflow:
             if fundamentals_mode == "prod" and do_fundamentals:
                 fundamentals_prod = await workflow.execute_activity(
                     FETCH_FUNDAMENTALS_PROD,
-                    args=[fundamentals_stage],
+                    args=[fundamentals_stage, instrument, model_version],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
                 )
@@ -136,7 +138,7 @@ class MarketDataWorkflow:
             # Intraday path
             intraday_raw = await workflow.execute_activity(
                 FETCH_INTRADAY_RAW,
-                args=[[ticker], start_date, end_date, intraday_frequency],
+                args=[[ticker], start_date, end_date, intraday_frequency, instrument, model_version],
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=LONG_RETRY,
             ) if do_intraday else []
@@ -144,7 +146,7 @@ class MarketDataWorkflow:
             if intraday_mode == "prod" and do_intraday:
                 intraday_prod = await workflow.execute_activity(
                     FETCH_INTRADAY_PROD,
-                    args=[intraday_raw, intraday_frequency],
+                    args=[intraday_raw, intraday_frequency, instrument, model_version],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
                 )

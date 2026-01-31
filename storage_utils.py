@@ -72,6 +72,7 @@ def build_object_path(
             raise ValueError("model_version required for models path")
         if not instrument:
             raise ValueError("instrument required for models path")
+        parts.append(dataset)
         parts.append(instrument.lower())
         filename = f"{model_version}.json"
         parts.append(filename)
@@ -83,7 +84,7 @@ def build_object_path(
         filename_freq_slug = INTRADAY_FREQ_SLUGS.get(freq_normalized, freq_normalized)
     else:
         dataset_dir = dataset
-        filename_freq_slug = freq_normalized
+        filename_freq_slug = freq_normalized if freq_normalized else ""
 
     parts.append(dataset_dir)
     if ticker:

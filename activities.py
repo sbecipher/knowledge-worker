@@ -62,12 +62,33 @@ def _recent_filings_count(payload: Dict[str, Any]) -> int:
     return len(accessions) if isinstance(accessions, list) else 0
 
 
-def _metadata_base(layer: str, dataset: str, ticker: Optional[str], start: Optional[str], end: Optional[str], freq: Optional[str]) -> Dict[str, str]:
+def _resolve_instrument(instrument: Optional[str]) -> str:
+    value = (instrument or "").strip()
+    return value.lower() if value else SETTINGS.instrument
+
+
+def _resolve_model_version(model_version: Optional[str]) -> str:
+    value = (model_version or "").strip()
+    return value if value else SETTINGS.model_version
+
+
+def _metadata_base(
+    layer: str,
+    dataset: str,
+    ticker: Optional[str],
+    start: Optional[str],
+    end: Optional[str],
+    freq: Optional[str],
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> Dict[str, str]:
+    resolved_instrument = _resolve_instrument(instrument)
+    resolved_model_version = _resolve_model_version(model_version)
     meta = {
         "layer": layer,
         "dataset": dataset,
-        "instrument": SETTINGS.instrument,
-        "model_version": SETTINGS.model_version,
+        "instrument": resolved_instrument,
+        "model_version": resolved_model_version,
         "run_id": SETTINGS.run_id,
         "source": "marketio-api",
     }
@@ -174,9 +195,13 @@ async def check_marketio_health() -> None:
 
 
 @activity.defn(name="fetch_companies_metadata")
-async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[str, Any]:
+async def fetch_companies_metadata(
+    tickers: Optional[List[str]] = None,
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Fetch metadata and upload to prod/{instrument}/models/{model_version}.json.
+    Fetch metadata and upload to prod/models/{instrument}/{model_version}.json.
     """
     if activity.is_cancelled():
         raise RuntimeError("fetch_companies_metadata cancelled")
@@ -185,16 +210,27 @@ async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[
     data = await _post_json("/api/v2/companies/metadata", payload)
     activity.heartbeat({"count": len(data)})
 
+    resolved_instrument = _resolve_instrument(instrument)
+    resolved_model_version = _resolve_model_version(model_version)
     object_path = build_object_path(
         layer="prod",
-        instrument=SETTINGS.instrument,
+        instrument=resolved_instrument,
         dataset="models",
-        model_version=SETTINGS.model_version,
+        model_version=resolved_model_version,
         prefix=SETTINGS.gcs_prefix,
     )
     local_path = _temp_path(object_path)
     write_json(local_path, data)
-    metadata = _metadata_base("prod", "models", None, None, None, None)
+    metadata = _metadata_base(
+        "prod",
+        "models",
+        None,
+        None,
+        None,
+        None,
+        instrument=resolved_instrument,
+        model_version=resolved_model_version,
+    )
     uri = UPLOADER.upload_file(local_path, object_path, metadata=metadata)
 
     cik_map = {
@@ -215,6 +251,8 @@ async def fetch_companies_metadata(tickers: Optional[List[str]] = None) -> Dict[
 async def fetch_edgar_source(
     tickers: Optional[List[str]] = None,
     ciks: Optional[List[str]] = None,
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
 ) -> List[dict]:
     """
     Fetch raw EDGAR submissions (source=True) and upload them to GCS.
@@ -270,6 +308,8 @@ async def fetch_edgar_source(
         dataset="edgar",
         extra_meta={"edgar_source": "true"},
         include_full_artifact=False,
+        instrument=instrument,
+        model_version=model_version,
     )
 
 
@@ -280,7 +320,11 @@ def _save_artifacts(
     extra_meta: Optional[Dict[str, str]] = None,
     freq: Optional[str] = None,
     include_full_artifact: bool = False,
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
 ) -> List[dict]:
+    resolved_instrument = _resolve_instrument(instrument)
+    resolved_model_version = _resolve_model_version(model_version)
     summaries: List[dict] = []
     for artifact in artifacts:
         data_items = artifact.get("data")
@@ -298,7 +342,7 @@ def _save_artifacts(
         end_date = artifact.get("end_date")
         object_path = build_object_path(
             layer=layer,
-            instrument=SETTINGS.instrument,
+            instrument=resolved_instrument,
             dataset=dataset,
             ticker=ticker,
             freq=freq or artifact.get("frequency"),
@@ -308,7 +352,16 @@ def _save_artifacts(
         )
         local_path = _temp_path(object_path)
         write_json(local_path, artifact)
-        meta = _metadata_base(layer, dataset, ticker, start_date, end_date, freq or artifact.get("frequency"))
+        meta = _metadata_base(
+            layer,
+            dataset,
+            ticker,
+            start_date,
+            end_date,
+            freq or artifact.get("frequency"),
+            instrument=resolved_instrument,
+            model_version=resolved_model_version,
+        )
         if extra_meta:
             meta.update(extra_meta)
         if artifact.get("cik"):
@@ -340,7 +393,13 @@ def _save_artifacts(
 
 
 @activity.defn(name="fetch_fundamentals_raw")
-async def fetch_fundamentals_raw(tickers: List[str], start_date: str, end_date: str) -> List[dict]:
+async def fetch_fundamentals_raw(
+    tickers: List[str],
+    start_date: str,
+    end_date: str,
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> List[dict]:
     payload = {
         "tickers": tickers,
         "start_date": start_date,
@@ -349,11 +408,21 @@ async def fetch_fundamentals_raw(tickers: List[str], start_date: str, end_date: 
     }
     data = await _post_json("/api/v2/companies/fundamentals", payload)
     activity.heartbeat({"count": len(data)})
-    return _save_artifacts(data, layer="source", dataset="fundamentals")
+    return _save_artifacts(
+        data,
+        layer="source",
+        dataset="fundamentals",
+        instrument=instrument,
+        model_version=model_version,
+    )
 
 
 @activity.defn(name="fetch_fundamentals_stage")
-async def fetch_fundamentals_stage(raw_artifacts: List[dict]) -> List[dict]:
+async def fetch_fundamentals_stage(
+    raw_artifacts: List[dict],
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> List[dict]:
     """
     Build staged fundamentals from raw artifacts and upload.
     """
@@ -382,11 +451,21 @@ async def fetch_fundamentals_stage(raw_artifacts: List[dict]) -> List[dict]:
         data = await _post_json("/api/v2/companies/fundamentals/processed", payload)
         activity.heartbeat({"ticker": ticker, "count": len(data)})
         results.extend(data)
-    return _save_artifacts(results, layer="stage", dataset="fundamentals")
+    return _save_artifacts(
+        results,
+        layer="stage",
+        dataset="fundamentals",
+        instrument=instrument,
+        model_version=model_version,
+    )
 
 
 @activity.defn(name="fetch_fundamentals_prod")
-async def fetch_fundamentals_prod(staged_artifacts: List[dict]) -> List[dict]:
+async def fetch_fundamentals_prod(
+    staged_artifacts: List[dict],
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> List[dict]:
     """
     Build production fundamentals from staged artifacts and upload.
     """
@@ -415,11 +494,24 @@ async def fetch_fundamentals_prod(staged_artifacts: List[dict]) -> List[dict]:
         data = await _post_json("/api/v2/companies/fundamentals/production", payload)
         activity.heartbeat({"ticker": ticker, "count": len(data)})
         results.extend(data)
-    return _save_artifacts(results, layer="prod", dataset="fundamentals")
+    return _save_artifacts(
+        results,
+        layer="prod",
+        dataset="fundamentals",
+        instrument=instrument,
+        model_version=model_version,
+    )
 
 
 @activity.defn(name="fetch_intraday_raw")
-async def fetch_intraday_raw(tickers: List[str], start_date: str, end_date: str, frequency: str) -> List[dict]:
+async def fetch_intraday_raw(
+    tickers: List[str],
+    start_date: str,
+    end_date: str,
+    frequency: str,
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> List[dict]:
     payload = {
         "tickers": tickers,
         "start_date": start_date,
@@ -429,11 +521,23 @@ async def fetch_intraday_raw(tickers: List[str], start_date: str, end_date: str,
     }
     data = await _post_json("/api/v2/companies/intraday", payload)
     activity.heartbeat({"count": len(data)})
-    return _save_artifacts(data, layer="source", dataset="intraday", freq=frequency)
+    return _save_artifacts(
+        data,
+        layer="source",
+        dataset="intraday",
+        freq=frequency,
+        instrument=instrument,
+        model_version=model_version,
+    )
 
 
 @activity.defn(name="fetch_intraday_prod")
-async def fetch_intraday_prod(raw_artifacts: List[dict], frequency: str) -> List[dict]:
+async def fetch_intraday_prod(
+    raw_artifacts: List[dict],
+    frequency: str,
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> List[dict]:
     if not raw_artifacts:
         raise ValueError("No raw intraday artifacts provided for production step")
     results: List[dict] = []
@@ -459,4 +563,11 @@ async def fetch_intraday_prod(raw_artifacts: List[dict], frequency: str) -> List
         data = await _post_json("/api/v2/companies/intraday/production", payload)
         activity.heartbeat({"ticker": ticker, "count": len(data)})
         results.extend(data)
-    return _save_artifacts(results, layer="prod", dataset="intraday", freq=frequency)
+    return _save_artifacts(
+        results,
+        layer="prod",
+        dataset="intraday",
+        freq=frequency,
+        instrument=instrument,
+        model_version=model_version,
+    )

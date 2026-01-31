@@ -14,8 +14,8 @@ services:
 
       GCS_BUCKET: ${GCS_BUCKET:-sbecipher-intelligence}
       GCS_PREFIX: ${GCS_PREFIX:-}
-      INSTRUMENT: ${INSTRUMENT:-ssga-xme}
-      MODEL_VERSION: ${MODEL_VERSION:-ssga-xme-metadata-v1225}
+      INSTRUMENT: ${INSTRUMENT:-mm-h5r1}
+      MODEL_VERSION: ${MODEL_VERSION:-metadata}
       TEMP_DIR: ${TEMP_DIR:-tmp}
       UPLOAD_ENABLED: ${UPLOAD_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
