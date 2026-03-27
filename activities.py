@@ -51,6 +51,39 @@ def _temp_path(object_path: str) -> Path:
     return path
 
 
+def _load_artifact_data_block(artifact: Dict[str, Any], warning_prefix: str) -> Any:
+    """
+    Resolve the artifact payload used for stage/prod API calls.
+
+    Logic:
+    1) Prefer in-memory `artifact["data"]` when present.
+    2) If summaries were passed (no embedded `data`), reload from `local_path`.
+    3) Return an empty list only when no data can be recovered.
+    """
+    data_block = artifact.get("data")
+    if data_block:
+        return data_block
+    local_path = artifact.get("local_path")
+    if not local_path:
+        return []
+    try:
+        loaded = json.loads(Path(local_path).read_text(encoding="utf-8"))
+        return loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s from %s: %s", warning_prefix, local_path, exc)
+        return []
+
+
+def _required_ticker(artifact: Dict[str, Any], artifact_type: str) -> str:
+    """
+    Validate that artifacts contain a ticker before downstream API calls.
+    """
+    ticker = str(artifact.get("ticker") or "").strip()
+    if not ticker:
+        raise ValueError(f"Missing ticker in {artifact_type} artifact: {artifact.get('object_path')}")
+    return ticker
+
+
 def _recent_filings_count(payload: Dict[str, Any]) -> int:
     """
     Count the number of recent SEC filings in a submissions payload.
@@ -323,6 +356,9 @@ def _save_artifacts(
     instrument: Optional[str] = None,
     model_version: Optional[str] = None,
 ) -> List[dict]:
+    """
+    Persist artifacts locally, upload to GCS, and return a lightweight summary list.
+    """
     resolved_instrument = _resolve_instrument(instrument)
     resolved_model_version = _resolve_model_version(model_version)
     summaries: List[dict] = []
@@ -373,6 +409,11 @@ def _save_artifacts(
         if identifier:
             meta["identifier"] = identifier
         uri = UPLOADER.upload_file(local_path, object_path, metadata=meta)
+        if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
+            try:
+                local_path.unlink(missing_ok=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to cleanup local artifact %s: %s", local_path, exc)
         if include_full_artifact:
             summary = dict(artifact)
         else:
@@ -431,16 +472,10 @@ async def fetch_fundamentals_stage(
 
     results: List[dict] = []
     for artifact in raw_artifacts:
-        ticker = artifact.get("ticker")
+        ticker = _required_ticker(artifact, "raw fundamentals")
         start_date = artifact.get("start_date")
         end_date = artifact.get("end_date")
-        data_block = artifact.get("data")
-        if not data_block and artifact.get("local_path"):
-            try:
-                loaded = json.loads(Path(artifact["local_path"]).read_text(encoding="utf-8"))
-                data_block = loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to reload raw fundamentals from %s: %s", artifact["local_path"], exc)
+        data_block = _load_artifact_data_block(artifact, "Failed to reload raw fundamentals")
         payload = {
             "tickers": [ticker],
             "start_date": start_date,
@@ -474,16 +509,10 @@ async def fetch_fundamentals_prod(
 
     results: List[dict] = []
     for artifact in staged_artifacts:
-        ticker = artifact.get("ticker")
+        ticker = _required_ticker(artifact, "staged fundamentals")
         start_date = artifact.get("start_date")
         end_date = artifact.get("end_date")
-        data_block = artifact.get("data")
-        if not data_block and artifact.get("local_path"):
-            try:
-                loaded = json.loads(Path(artifact["local_path"]).read_text(encoding="utf-8"))
-                data_block = loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to reload staged fundamentals from %s: %s", artifact["local_path"], exc)
+        data_block = _load_artifact_data_block(artifact, "Failed to reload staged fundamentals")
         payload = {
             "tickers": [ticker],
             "start_date": start_date,
@@ -542,16 +571,10 @@ async def fetch_intraday_prod(
         raise ValueError("No raw intraday artifacts provided for production step")
     results: List[dict] = []
     for artifact in raw_artifacts:
-        ticker = artifact.get("ticker")
+        ticker = _required_ticker(artifact, "raw intraday")
         start_date = artifact.get("start_date")
         end_date = artifact.get("end_date")
-        data_block = artifact.get("data")
-        if not data_block and artifact.get("local_path"):
-            try:
-                loaded = json.loads(Path(artifact["local_path"]).read_text(encoding="utf-8"))
-                data_block = loaded.get("data", loaded) if isinstance(loaded, dict) else loaded
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to reload raw intraday from %s: %s", artifact["local_path"], exc)
+        data_block = _load_artifact_data_block(artifact, "Failed to reload raw intraday")
         payload = {
             "tickers": [ticker],
             "start_date": start_date,
