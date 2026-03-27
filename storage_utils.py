@@ -1,6 +1,6 @@
 import json
 import logging
-import os
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
 from google.cloud.storage import Client as GCSClient # type: ignore
@@ -30,6 +30,22 @@ INTRADAY_FREQ_SLUGS = {
     "quarter": "qtr",
     "qtr": "qtr",
 }
+
+
+_SAFE_SEGMENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def sanitize_path_segment(value: str, fallback: str = "unknown") -> str:
+    """
+    Restrict user/API-provided values to a safe path-segment character set.
+
+    Why:
+    - Ticker/instrument/frequency values can originate from external systems.
+    - Allowing path separators and special characters can corrupt object layout.
+    - Normalizing here makes path behavior deterministic across all callers.
+    """
+    cleaned = _SAFE_SEGMENT_PATTERN.sub("_", value).strip("._-")
+    return cleaned or fallback
 
 
 def ensure_dir(path: Path) -> None:
@@ -73,31 +89,41 @@ def build_object_path(
         if not instrument:
             raise ValueError("instrument required for models path")
         parts.append(dataset)
-        parts.append(instrument.lower())
-        filename = f"{model_version}.json"
+        parts.append(sanitize_path_segment(instrument.lower()))
+        model_slug = sanitize_path_segment(model_version)
+        filename = f"{model_slug}.json"
         parts.append(filename)
         return str(PurePosixPath(*parts))
 
     freq_normalized = freq.lower() if isinstance(freq, str) else None
     if dataset == "intraday" and freq_normalized:
         dataset_dir = INTRADAY_DIR_MAP.get(freq_normalized, "intraday")
-        filename_freq_slug = INTRADAY_FREQ_SLUGS.get(freq_normalized, freq_normalized)
+        raw_freq = INTRADAY_FREQ_SLUGS.get(freq_normalized, freq_normalized)
+        filename_freq_slug = sanitize_path_segment(raw_freq)
     else:
         dataset_dir = dataset
-        filename_freq_slug = freq_normalized if freq_normalized else ""
+        filename_freq_slug = sanitize_path_segment(freq_normalized) if freq_normalized else ""
 
     parts.append(dataset_dir)
     if ticker:
-        parts.append(ticker.upper())
+        safe_ticker = sanitize_path_segment(ticker.upper())
+        parts.append(safe_ticker)
+    else:
+        safe_ticker = ""
     filename_parts = []
     if ticker and dataset != "models":
-        filename_parts.append(ticker.upper())
+        filename_parts.append(safe_ticker)
     if filename_freq_slug:
         filename_parts.append(filename_freq_slug)
     if start_date:
         filename_parts.append(format_date(start_date))
     if end_date:
         filename_parts.append(format_date(end_date))
+    if suffix:
+        filename_parts.append(sanitize_path_segment(suffix))
+    if not filename_parts:
+        # Avoid ambiguous ".json" object names when metadata is incomplete.
+        filename_parts.append("artifact")
     filename = "_".join(filename_parts) + ".json"
     parts.append(filename)
     return str(PurePosixPath(*parts))

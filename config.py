@@ -1,4 +1,5 @@
 import os
+import logging
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -6,6 +7,8 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from google.cloud import secretmanager
+
+logger = logging.getLogger(__name__)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -52,7 +55,9 @@ def _load_intrinio_api_key() -> str:
         response = client.access_secret_version(request={"name": secret_name})
         return response.payload.data.decode("utf-8").strip()
     except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Failed to load Intrinio API key from Secret Manager: {exc}") from exc
+        # Do not fail worker startup for pipelines that don't use Intrinio endpoints.
+        logger.warning("Intrinio API key unavailable from Secret Manager: %s", exc)
+        return ""
 
 
 def _infer_marketio_auth(api_url: str) -> bool:
@@ -86,6 +91,7 @@ class Settings:
     temporal_address: str
     run_id: str
     intrinio_api_key: str
+    cleanup_local_artifacts: bool
 
 
 def load_settings() -> Settings:
@@ -106,6 +112,7 @@ def load_settings() -> Settings:
     temporal_address = _env_str("TEMPORAL_ADDRESS", "172.0.0.4:7233")
     run_id = _env_str("RUN_ID", date.today().isoformat())
     intrinio_api_key = _load_intrinio_api_key()
+    cleanup_local_artifacts = _env_bool("CLEANUP_LOCAL_ARTIFACTS", True)
 
     return Settings(
         marketio_api_url=marketio_api_url,
@@ -123,4 +130,5 @@ def load_settings() -> Settings:
         temporal_address=temporal_address,
         run_id=run_id,
         intrinio_api_key=intrinio_api_key,
+        cleanup_local_artifacts=cleanup_local_artifacts,
     )

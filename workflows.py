@@ -164,7 +164,11 @@ class MarketDataWorkflow:
                 return await process_ticker(ticker)
 
         tasks = [process_ticker_limited(ticker) for ticker in tickers]
-        ticker_outputs = await asyncio.gather(*tasks)
+        # Preserve successful ticker outputs even when one ticker fails.
+        ticker_outputs = await asyncio.gather(*tasks, return_exceptions=True)
         for ticker, output in zip(tickers, ticker_outputs):
-            results[ticker] = output
+            if isinstance(output, Exception):
+                results[ticker] = [{"error": str(output), "type": output.__class__.__name__}]
+            else:
+                results[ticker] = output
         return results

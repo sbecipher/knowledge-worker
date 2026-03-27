@@ -29,6 +29,7 @@ export INSTRUMENT=ssga-xme
 export MODEL_VERSION=1125v
 export TEMP_DIR=tmp
 export UPLOAD_ENABLED=true
+export CLEANUP_LOCAL_ARTIFACTS=true            # optional; remove temp files after successful uploads
 export TEMPORAL_ADDRESS=127.0.0.1:7233
 export TEMPORAL_TASK_QUEUE=market-data-task-queue
 export LOG_LEVEL=INFO
