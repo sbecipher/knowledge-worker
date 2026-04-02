@@ -1,7 +1,6 @@
 import os
 import logging
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -89,9 +88,12 @@ class Settings:
     http_stream_timeout: float
     temporal_task_queue: str
     temporal_address: str
-    run_id: str
     intrinio_api_key: str
     cleanup_local_artifacts: bool
+    activity_executor_threads: int
+    max_concurrent_activities: int
+    max_concurrent_workflow_tasks: int
+    max_cached_workflows: int
 
 
 def load_settings() -> Settings:
@@ -110,9 +112,12 @@ def load_settings() -> Settings:
     http_stream_timeout = float(_env_str("STREAM_CLIENT_TIMEOUT", "600"))
     temporal_task_queue = _env_str("TEMPORAL_TASK_QUEUE", "marketio-task-queue")
     temporal_address = _env_str("TEMPORAL_ADDRESS", "172.0.0.4:7233")
-    run_id = _env_str("RUN_ID", date.today().isoformat())
     intrinio_api_key = _load_intrinio_api_key()
     cleanup_local_artifacts = _env_bool("CLEANUP_LOCAL_ARTIFACTS", True)
+    activity_executor_threads = int(_env_str("ACTIVITY_EXECUTOR_THREADS", "16"))
+    max_concurrent_activities = int(_env_str("MAX_CONCURRENT_ACTIVITIES", str(activity_executor_threads)))
+    max_concurrent_workflow_tasks = int(_env_str("MAX_CONCURRENT_WORKFLOW_TASKS", "100"))
+    max_cached_workflows = int(_env_str("MAX_CACHED_WORKFLOWS", "1000"))
 
     return Settings(
         marketio_api_url=marketio_api_url,
@@ -128,7 +133,10 @@ def load_settings() -> Settings:
         http_stream_timeout=http_stream_timeout,
         temporal_task_queue=temporal_task_queue,
         temporal_address=temporal_address,
-        run_id=run_id,
         intrinio_api_key=intrinio_api_key,
         cleanup_local_artifacts=cleanup_local_artifacts,
+        activity_executor_threads=activity_executor_threads,
+        max_concurrent_activities=max_concurrent_activities,
+        max_concurrent_workflow_tasks=max_concurrent_workflow_tasks,
+        max_cached_workflows=max_cached_workflows,
     )

@@ -2,6 +2,13 @@
 
 Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR submissions, fundamentals, intraday) and writes artifacts to GCS in a hierarchical layout per instrument.
 
+This worker now uses:
+
+- A structured workflow request payload instead of positional workflow arguments
+- Synchronous Temporal activities executed on a worker thread pool
+- Durable artifact references (`gs://...` or local fallback) between stages
+- Run-scoped metadata snapshots keyed by `request_id`
+
 ## Prerequisites
 
 - Python 3.13+
@@ -34,6 +41,10 @@ export TEMPORAL_ADDRESS=127.0.0.1:7233
 export TEMPORAL_TASK_QUEUE=market-data-task-queue
 export LOG_LEVEL=INFO
 export HEALTHCHECK_PORT=8080                    # optional; defaults to PORT when set
+export ACTIVITY_EXECUTOR_THREADS=16             # optional; sync activity thread pool size
+export MAX_CONCURRENT_ACTIVITIES=16             # optional
+export MAX_CONCURRENT_WORKFLOW_TASKS=100        # optional
+export MAX_CACHED_WORKFLOWS=1000                # optional
 # Optional Intrinio overrides
 # export INTRINIO_API_KEY=...
 # export INTRINIO_SECRET_MANAGER_ENABLED=false
@@ -46,7 +57,7 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
 
 ## GCS layout (hierarchical)
 
-- Metadata: `prod/models/{INSTRUMENT}/{model_version}.json`
+- Metadata snapshots: `prod/models/{INSTRUMENT}/{model_version}/{request_id}.json`
 - EDGAR submissions: `source/edgar/{TICKER}/{TICKER}.json`
 - Fundamentals:  
   - Raw: `source/fundamentals/{TICKER}/{start}_{end}.json`  
@@ -59,7 +70,7 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
   - Quarterly: `source/quarter/{TICKER}/{TICKER}_qtr_{start}_{end}.json`  
   - Prod mirrors the same directory and filename structure under `prod/`
 
-Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Stage is required for fundamentals prod.
+Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Stage is required for fundamentals prod. Regular workflow runs do not update a canonical latest metadata file.
 
 ## Run the worker
 
@@ -78,6 +89,21 @@ curl -s http://localhost:8080/healthz
 
 Keep the worker running and start workflows from another terminal using the
 client in `client/client.py` (or your Cloud Function).
+
+## Tests
+
+Install the dev dependencies and run the worker test suite:
+
+```bash
+python -m pip install -r requirements-dev.txt
+pytest -q
+```
+
+Replay verification uses `tests/histories/` when history fixtures are present:
+
+```bash
+pytest -q tests/test_replay.py
+```
 
 ## Container build
 
@@ -221,7 +247,7 @@ TEMPORAL_WORKFLOW=MarketDataWorkflow
 Inputs to pass per run (query/body → function args):
 
 ```text
-tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,edgar_source,metadata_only,edgar_only,workflow_id
+tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,edgar_source,metadata_only,edgar_only,workflow_id,request_id
 ```
 
 See `client/README.md` for local CLI usage and examples.
@@ -231,11 +257,11 @@ Functions.
 ## What the workflow does (per ticker)
 
 - Health check `/health`
-- Metadata → write/upload companies file (always runs; EDGAR uses CIKs from metadata when present)
+- Metadata → write/upload run-scoped companies snapshot (always runs; EDGAR uses CIKs from metadata when present)
 - EDGAR submissions → per ticker raw SEC submissions (source=True) uploaded under `source/edgar/` when `--edgar-source/--edgar-only`
 - Fundamentals path: raw → stage → prod (from staged data) unless `--fundamentals-mode none` or `--edgar-only`
 - Intraday path: raw → prod unless `--intraday-mode none` or `--edgar-only`
-- Uploads JSON artifacts with metadata in GCS object metadata (instrument, layer, ticker, window, run_id).
+- Uploads JSON artifacts with metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `instrument`, `layer`, `ticker`, `window`).
 
 ## Activities
 

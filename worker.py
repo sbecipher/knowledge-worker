@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import threading
@@ -65,6 +66,7 @@ async def main() -> None:
         env_temporal,
     )
     client = await Client.connect(settings.temporal_address)
+    activity_executor = ThreadPoolExecutor(max_workers=settings.activity_executor_threads)
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
@@ -79,11 +81,19 @@ async def main() -> None:
             fetch_intraday_raw,
             fetch_intraday_prod,
         ],
+        activity_executor=activity_executor,
+        max_concurrent_activities=settings.max_concurrent_activities,
+        max_concurrent_workflow_tasks=settings.max_concurrent_workflow_tasks,
+        max_cached_workflows=settings.max_cached_workflows,
     )
     logger.info(
-        "Worker started for task queue '%s', connecting to %s",
+        "Worker started for task queue '%s', connecting to %s, activity_threads=%s, max_concurrent_activities=%s, max_concurrent_workflow_tasks=%s, max_cached_workflows=%s",
         settings.temporal_task_queue,
         settings.temporal_address,
+        settings.activity_executor_threads,
+        settings.max_concurrent_activities,
+        settings.max_concurrent_workflow_tasks,
+        settings.max_cached_workflows,
     )
     await worker.run()
 

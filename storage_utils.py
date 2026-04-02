@@ -3,6 +3,7 @@ import logging
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
+
 from google.cloud.storage import Client as GCSClient # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -91,8 +92,11 @@ def build_object_path(
         parts.append(dataset)
         parts.append(sanitize_path_segment(instrument.lower()))
         model_slug = sanitize_path_segment(model_version)
-        filename = f"{model_slug}.json"
-        parts.append(filename)
+        if suffix:
+            parts.append(model_slug)
+            parts.append(f"{sanitize_path_segment(suffix)}.json")
+        else:
+            parts.append(f"{model_slug}.json")
         return str(PurePosixPath(*parts))
 
     freq_normalized = freq.lower() if isinstance(freq, str) else None
@@ -174,6 +178,13 @@ class GCSUploader:
         uri = f"gs://{self.bucket_name}/{object_path}"
         logger.info("Uploaded %s to %s", local_path, uri)
         return uri
+
+    def download_json(self, object_path: str) -> Any:
+        if not self.enabled or not self._bucket:
+            raise RuntimeError("Uploads are disabled; cannot download artifact from GCS")
+        blob = self._bucket.blob(object_path)
+        payload = blob.download_as_bytes()
+        return json.loads(payload.decode("utf-8"))
 
 
 def write_json(path: Path, payload: Any) -> Path:
