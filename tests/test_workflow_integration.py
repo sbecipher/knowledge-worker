@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from typing import Any, Callable, Dict, List
 
+import pytest
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
@@ -34,7 +35,11 @@ async def _run_workflow(
     activities_impl: List[Callable[..., Any]],
 ) -> Dict[str, Any]:
     task_queue = "marketflow-test-task-queue"
-    async with await WorkflowEnvironment.start_time_skipping() as env:
+    try:
+        env = await WorkflowEnvironment.start_time_skipping()
+    except RuntimeError as exc:
+        pytest.skip(f"Temporal test server unavailable in this environment: {exc}")
+    async with env:
         activity_executor = ThreadPoolExecutor(max_workers=8)
         worker = Worker(
             env.client,
@@ -71,7 +76,11 @@ def test_metadata_only_workflow() -> None:
         model_version: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return {"ciks": {ticker: "0000123456" for ticker in tickers}, "record_count": len(tickers)}
+        return {
+            "ciks": {ticker: "0000123456" for ticker in tickers},
+            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
+            "record_count": len(tickers),
+        }
 
     result = asyncio.run(
         _run_workflow(
@@ -102,7 +111,11 @@ def test_edgar_only_workflow() -> None:
         model_version: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return {"ciks": {ticker: "0000123456" for ticker in tickers}, "record_count": len(tickers)}
+        return {
+            "ciks": {ticker: "0000123456" for ticker in tickers},
+            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
+            "record_count": len(tickers),
+        }
 
     @activity.defn(name="fetch_edgar_source")
     def fetch_edgar_source(
@@ -144,40 +157,40 @@ def test_full_pipeline_workflow() -> None:
         model_version: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return {"ciks": {ticker: "0000123456" for ticker in tickers}, "record_count": len(tickers)}
+        return {
+            "ciks": {ticker: "0000123456" for ticker in tickers},
+            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
+            "record_count": len(tickers),
+        }
 
     @activity.defn(name="fetch_fundamentals_raw")
     def fetch_fundamentals_raw(
-        tickers: List[str],
+        ticker: str,
+        ric: str,
         start_date: str,
         end_date: str,
         instrument: str,
         model_version: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        return [_artifact_ref(tickers[0], "fundamentals", "source")]
+        ref = _artifact_ref(ticker, "fundamentals", "source")
+        ref["ric"] = ric
+        ref["primary_ric"] = ric
+        return [ref]
 
-    @activity.defn(name="fetch_fundamentals_stage")
-    def fetch_fundamentals_stage(
+    @activity.defn(name="fetch_fundamentals_prod")
+    def fetch_fundamentals_prod(
         raw_artifacts: List[Dict[str, Any]],
         instrument: str,
         model_version: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        return [_artifact_ref(raw_artifacts[0]["ticker"], "fundamentals", "stage")]
-
-    @activity.defn(name="fetch_fundamentals_prod")
-    def fetch_fundamentals_prod(
-        staged_artifacts: List[Dict[str, Any]],
-        instrument: str,
-        model_version: str,
-        execution: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        return [_artifact_ref(staged_artifacts[0]["ticker"], "fundamentals", "prod")]
+        return [_artifact_ref(raw_artifacts[0]["ticker"], "fundamentals", "prod")]
 
     @activity.defn(name="fetch_intraday_raw")
     def fetch_intraday_raw(
-        tickers: List[str],
+        ticker: str,
+        ric: str,
         start_date: str,
         end_date: str,
         frequency: str,
@@ -185,7 +198,10 @@ def test_full_pipeline_workflow() -> None:
         model_version: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        return [_artifact_ref(tickers[0], "intraday", "source")]
+        ref = _artifact_ref(ticker, "intraday", "source")
+        ref["ric"] = ric
+        ref["primary_ric"] = ric
+        return [ref]
 
     @activity.defn(name="fetch_intraday_prod")
     def fetch_intraday_prod(
@@ -209,7 +225,6 @@ def test_full_pipeline_workflow() -> None:
                 check_marketio_health,
                 fetch_companies_metadata,
                 fetch_fundamentals_raw,
-                fetch_fundamentals_stage,
                 fetch_fundamentals_prod,
                 fetch_intraday_raw,
                 fetch_intraday_prod,
@@ -217,6 +232,7 @@ def test_full_pipeline_workflow() -> None:
         )
     )
     assert result["AA"]["fundamentals_prod"][0]["layer"] == "prod"
+    assert result["AA"]["fundamentals_stage"] == []
     assert result["AA"]["intraday_prod"][0]["dataset"] == "intraday"
 
 
@@ -232,25 +248,33 @@ def test_partial_failure_isolated_per_ticker() -> None:
         model_version: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return {"ciks": {ticker: "0000123456" for ticker in tickers}, "record_count": len(tickers)}
+        return {
+            "ciks": {ticker: "0000123456" for ticker in tickers},
+            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
+            "record_count": len(tickers),
+        }
 
     @activity.defn(name="fetch_fundamentals_raw")
     def fetch_fundamentals_raw(
-        tickers: List[str],
+        ticker: str,
+        ric: str,
         start_date: str,
         end_date: str,
         instrument: str,
         model_version: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        ticker = tickers[0]
         if ticker == "NUE":
             raise ApplicationError("invalid upstream data", non_retryable=True)
-        return [_artifact_ref(ticker, "fundamentals", "source")]
+        ref = _artifact_ref(ticker, "fundamentals", "source")
+        ref["ric"] = ric
+        ref["primary_ric"] = ric
+        return [ref]
 
     @activity.defn(name="fetch_intraday_raw")
     def fetch_intraday_raw(
-        tickers: List[str],
+        ticker: str,
+        ric: str,
         start_date: str,
         end_date: str,
         frequency: str,
@@ -258,7 +282,10 @@ def test_partial_failure_isolated_per_ticker() -> None:
         model_version: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        return [_artifact_ref(tickers[0], "intraday", "source")]
+        ref = _artifact_ref(ticker, "intraday", "source")
+        ref["ric"] = ric
+        ref["primary_ric"] = ric
+        return [ref]
 
     result = asyncio.run(
         _run_workflow(
@@ -275,3 +302,59 @@ def test_partial_failure_isolated_per_ticker() -> None:
     )
     assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
     assert result["NUE"][0]["type"] == "ApplicationError"
+
+
+def test_eod_frequency_is_normalized_before_intraday_activity() -> None:
+    captured: Dict[str, str] = {}
+
+    @activity.defn(name="check_marketio_health")
+    def check_marketio_health(execution: Dict[str, Any]) -> None:
+        return None
+
+    @activity.defn(name="fetch_companies_metadata")
+    def fetch_companies_metadata(
+        tickers: List[str],
+        instrument: str,
+        model_version: str,
+        execution: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ciks": {ticker: "0000123456" for ticker in tickers},
+            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
+            "record_count": len(tickers),
+        }
+
+    @activity.defn(name="fetch_intraday_raw")
+    def fetch_intraday_raw(
+        ticker: str,
+        ric: str,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+        instrument: str,
+        model_version: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        captured["frequency"] = frequency
+        ref = _artifact_ref(ticker, "intraday", "source")
+        ref["ric"] = ric
+        ref["primary_ric"] = ric
+        return [ref]
+
+    result = asyncio.run(
+        _run_workflow(
+            {
+                "tickers": ["AA"],
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "fundamentals_mode": "none",
+                "intraday_mode": "raw",
+                "intraday_frequency": "eod",
+                "request_id": "req-eod",
+            },
+            [check_marketio_health, fetch_companies_metadata, fetch_intraday_raw],
+        )
+    )
+
+    assert captured["frequency"] == "daily"
+    assert result["AA"]["intraday_raw"][0]["ticker"] == "AA"

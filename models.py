@@ -10,6 +10,13 @@ DEFAULT_INTRADAY_MODE = "prod"
 DEFAULT_MAX_CONCURRENT_TICKERS = 5
 
 
+def normalize_intraday_frequency(value: Any) -> str:
+    text = str(value or DEFAULT_INTRADAY_FREQUENCY).strip().lower()
+    if text == "eod":
+        return DEFAULT_INTRADAY_FREQUENCY
+    return text or DEFAULT_INTRADAY_FREQUENCY
+
+
 @dataclass(frozen=True)
 class MarketDataRequest:
     tickers: List[str]
@@ -32,7 +39,7 @@ class MarketDataRequest:
             tickers=[str(ticker).strip().upper() for ticker in payload.get("tickers", []) if str(ticker).strip()],
             start_date=str(payload["start_date"]),
             end_date=str(payload["end_date"]),
-            intraday_frequency=str(payload.get("intraday_frequency") or DEFAULT_INTRADAY_FREQUENCY).strip().lower(),
+            intraday_frequency=normalize_intraday_frequency(payload.get("intraday_frequency")),
             fundamentals_mode=str(payload.get("fundamentals_mode") or DEFAULT_FUNDAMENTALS_MODE).strip().lower(),
             intraday_mode=str(payload.get("intraday_mode") or DEFAULT_INTRADAY_MODE).strip().lower(),
             edgar_source=bool(payload.get("edgar_source", False)),
@@ -75,6 +82,14 @@ class ArtifactRef:
     frequency: Optional[str] = None
     record_count: int = 0
     local_path: Optional[str] = None
+    provider: Optional[str] = None
+    source: Optional[str] = None
+    ric: Optional[str] = None
+    primary_ric: Optional[str] = None
+    organization_id: Optional[str] = None
+    cik_number: Optional[str] = None
+    field_count: Optional[int] = None
+    page_count: Optional[int] = None
 
     def to_payload(self) -> Dict[str, Any]:
         return asdict(self)

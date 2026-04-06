@@ -32,10 +32,34 @@ _MARKETIO_TOKEN_LOCK = threading.Lock()
 _MARKETIO_TOKEN_SKEW_SECONDS = 60
 _MARKETIO_TOKEN_FALLBACK_TTL_SECONDS = 300
 _NON_RETRYABLE_HTTP_STATUS_CODES = {400, 401, 403, 404, 422}
+MARKETIO_ROUTE_COMPANIES = "/api/v2/companies"
+MARKETIO_ROUTE_EDGAR_RAW = "/api/v2/edgar/raw"
+MARKETIO_ROUTE_FUNDAMENTALS_RAW = "/api/v2/fundamentals/raw"
+MARKETIO_ROUTE_FUNDAMENTALS_PROD = "/api/v2/fundamentals/production"
+MARKETIO_ROUTE_MARKET_DAILY_RAW = "/api/v2/market/daily/raw"
+MARKETIO_ROUTE_MARKET_DAILY_PROD = "/api/v2/market/daily/production"
+MARKETIO_MARKET_SOURCE_LSEG = "lseg"
+MARKETIO_MARKET_FREQUENCY_DAILY = "daily"
+MARKETIO_MARKET_EMPTY_RETRY_DELAY_SECONDS = 3.0
+MARKETIO_MARKET_EMPTY_RESPONSE_TYPE = "EmptyMarketFieldsResponse"
 
 
 def _non_retryable(message: str, type_name: str = "InvalidRequest") -> ApplicationError:
     return ApplicationError(message, type=type_name, non_retryable=True)
+
+
+def _activity_is_cancelled() -> bool:
+    try:
+        return activity.is_cancelled()
+    except RuntimeError:
+        return False
+
+
+def _activity_heartbeat(*details: Any) -> None:
+    try:
+        activity.heartbeat(*details)
+    except RuntimeError:
+        return
 
 
 def _make_client(
@@ -239,6 +263,103 @@ def _load_artifact_payload(artifact_ref: Dict[str, Any], warning_prefix: str) ->
         raise
 
 
+def _artifact_list(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        return [payload]
+    return []
+
+
+def _preferred_ric(value: Optional[Any]) -> Optional[str]:
+    text = str(value or "").strip().upper()
+    return text or None
+
+
+def _identifier_payload(*, ticker: str, ric: Optional[str]) -> Dict[str, Any]:
+    preferred_ric = _preferred_ric(ric)
+    if preferred_ric:
+        return {"ric": preferred_ric}
+    return {"tickers": [ticker]}
+
+
+def _artifact_identifier_payload(artifact_ref: Dict[str, Any]) -> Dict[str, Any]:
+    ticker = _required_ticker(artifact_ref, "artifact")
+    ric = artifact_ref.get("primary_ric") or artifact_ref.get("ric")
+    return _identifier_payload(ticker=ticker, ric=_preferred_ric(ric))
+
+
+def _non_empty_fields_map(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value)
+
+
+def _market_raw_artifact_stats(artifact: Dict[str, Any]) -> Dict[str, int]:
+    fields = artifact.get("fields")
+    data = artifact.get("data")
+    rows = data if isinstance(data, list) else []
+    populated_row_fields = sum(
+        1
+        for row in rows
+        if isinstance(row, dict) and _non_empty_fields_map(row.get("fields"))
+    )
+    return {
+        "field_count": int(artifact.get("field_count") or 0),
+        "top_level_fields_count": len(fields) if isinstance(fields, list) else 0,
+        "row_count": len(rows),
+        "populated_row_fields_count": populated_row_fields,
+    }
+
+
+def _market_raw_artifact_usable(artifact: Dict[str, Any]) -> bool:
+    stats = _market_raw_artifact_stats(artifact)
+    return (
+        stats["field_count"] > 0
+        and stats["top_level_fields_count"] > 0
+        and stats["row_count"] > 0
+        and stats["populated_row_fields_count"] > 0
+    )
+
+
+def _fetch_market_daily_raw_with_empty_retry(
+    payload: Dict[str, Any],
+    execution: ExecutionMetadata,
+    *,
+    ticker: str,
+    frequency: str,
+) -> List[Dict[str, Any]]:
+    last_artifacts: List[Dict[str, Any]] = []
+    for attempt in range(1, 3):
+        response = _post_json(MARKETIO_ROUTE_MARKET_DAILY_RAW, payload)
+        artifacts = _artifact_list(response)
+        last_artifacts = artifacts
+        artifact_stats = _market_raw_artifact_stats(artifacts[0]) if artifacts else {
+            "field_count": 0,
+            "top_level_fields_count": 0,
+            "row_count": 0,
+            "populated_row_fields_count": 0,
+        }
+        if artifacts and any(_market_raw_artifact_usable(artifact) for artifact in artifacts):
+            return artifacts
+        logger.warning(
+            "%s market_raw_empty_fields attempt=%s/%s frequency=%s field_count=%s top_level_fields=%s row_count=%s populated_row_fields=%s",
+            _log_prefix(execution, "intraday_raw", ticker),
+            attempt,
+            2,
+            frequency,
+            artifact_stats["field_count"],
+            artifact_stats["top_level_fields_count"],
+            artifact_stats["row_count"],
+            artifact_stats["populated_row_fields_count"],
+        )
+        if attempt < 2:
+            time.sleep(MARKETIO_MARKET_EMPTY_RETRY_DELAY_SECONDS)
+
+    raise ApplicationError(
+        f"Market raw response returned empty fields for ticker={ticker} frequency={frequency} after local retry",
+        type=MARKETIO_MARKET_EMPTY_RESPONSE_TYPE,
+    )
+
+
 def _required_ticker(artifact_ref: Dict[str, Any], artifact_type: str) -> str:
     ticker = str(artifact_ref.get("ticker") or "").strip()
     if not ticker:
@@ -309,8 +430,32 @@ def _save_artifacts(
         )
         if extra_meta:
             meta.update(extra_meta)
+        provider = str(artifact.get("provider") or "").strip()
+        if provider:
+            meta["provider"] = provider
+        source = str(artifact.get("source") or "").strip()
+        if source:
+            meta["source_provider"] = source
+        ric = _preferred_ric(artifact.get("ric"))
+        if ric:
+            meta["ric"] = ric
+        primary_ric = _preferred_ric(artifact.get("primary_ric"))
+        if primary_ric:
+            meta["primary_ric"] = primary_ric
+        cik_number = str(artifact.get("cik_number") or "").strip()
+        if cik_number:
+            meta["cik_number"] = cik_number
         if artifact.get("cik"):
             meta["cik"] = str(artifact["cik"])
+        organization_id = str(artifact.get("organization_id") or "").strip()
+        if organization_id:
+            meta["organization_id"] = organization_id
+        field_count = artifact.get("field_count")
+        if field_count is not None:
+            meta["field_count"] = str(field_count)
+        page_count = artifact.get("page_count")
+        if page_count is not None:
+            meta["page_count"] = str(page_count)
         company_id = artifact.get("company_id") or artifact.get("id")
         if company_id:
             meta["company_id"] = str(company_id)
@@ -335,6 +480,14 @@ def _save_artifacts(
             frequency=freq or artifact.get("frequency"),
             record_count=record_count,
             local_path=str(local_path),
+            provider=provider or None,
+            source=source or None,
+            ric=ric,
+            primary_ric=primary_ric,
+            organization_id=organization_id or None,
+            cik_number=cik_number or None,
+            field_count=int(field_count) if isinstance(field_count, int) else None,
+            page_count=int(page_count) if isinstance(page_count, int) else None,
         )
 
         if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
@@ -361,7 +514,7 @@ def _save_artifacts(
 
 @activity.defn(name="check_marketio_health")
 def check_marketio_health(execution: Dict[str, Any]) -> None:
-    if activity.is_cancelled():
+    if _activity_is_cancelled():
         raise RuntimeError("check_marketio_health cancelled")
     execution_meta = _execution_metadata_from_payload(execution)
     base_url = SETTINGS.marketio_api_url.rstrip("/")
@@ -376,7 +529,7 @@ def check_marketio_health(execution: Dict[str, Any]) -> None:
             response = client.get(url, headers=headers)
         _raise_for_status(response, url)
     logger.info("%s healthcheck_ok", _log_prefix(execution_meta, "healthcheck"))
-    activity.heartbeat({"status": "healthy"})
+    _activity_heartbeat({"status": "healthy"})
 
 
 @activity.defn(name="fetch_companies_metadata")
@@ -386,14 +539,14 @@ def fetch_companies_metadata(
     model_version: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    if activity.is_cancelled():
+    if _activity_is_cancelled():
         raise RuntimeError("fetch_companies_metadata cancelled")
     execution_meta = _execution_metadata_from_payload(execution)
     payload: Dict[str, Any] = {"tickers": tickers} if tickers else {}
 
-    data = _post_json("/api/v2/companies/metadata", payload)
+    data = _post_json(MARKETIO_ROUTE_COMPANIES, payload)
     record_count = len(data) if isinstance(data, list) else 1
-    activity.heartbeat({"count": record_count})
+    _activity_heartbeat({"count": record_count})
 
     resolved_instrument = _resolve_instrument(instrument)
     resolved_model_version = _resolve_model_version(model_version)
@@ -425,9 +578,14 @@ def fetch_companies_metadata(
         local_path_value = None
 
     cik_map = {
-        (item.get("ticker") or "").upper(): str(item.get("cik")).zfill(10)
+        (item.get("ticker") or "").upper(): str(item.get("cik_number") or item.get("cik")).zfill(10)
         for item in data
-        if isinstance(item, dict) and item.get("ticker") and item.get("cik")
+        if isinstance(item, dict) and item.get("ticker") and (item.get("cik_number") or item.get("cik"))
+    } if isinstance(data, list) else {}
+    ric_map = {
+        (item.get("ticker") or "").upper(): str(item.get("primary_ric") or item.get("ric")).strip().upper()
+        for item in data
+        if isinstance(item, dict) and item.get("ticker") and (item.get("primary_ric") or item.get("ric"))
     } if isinstance(data, list) else {}
 
     logger.info(
@@ -442,6 +600,7 @@ def fetch_companies_metadata(
         "object_path": object_path,
         "record_count": record_count,
         "ciks": cik_map,
+        "rics": ric_map,
         "request_id": execution_meta.request_id,
         "workflow_id": execution_meta.workflow_id,
         "workflow_run_id": execution_meta.workflow_run_id,
@@ -459,20 +618,20 @@ def fetch_edgar_source(
     model_version: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
-    if activity.is_cancelled():
+    if _activity_is_cancelled():
         raise RuntimeError("fetch_edgar_source cancelled")
     execution_meta = _execution_metadata_from_payload(execution)
 
     requests: List[Dict[str, Any]] = []
     if tickers:
-        requests.extend({"ticker": ticker, "source": True} for ticker in tickers)
+        requests.extend({"ticker": ticker} for ticker in tickers)
     if ciks:
-        requests.extend({"cik": cik, "source": True} for cik in ciks)
+        requests.extend({"cik": cik} for cik in ciks)
     if not requests:
         raise _non_retryable("At least one ticker or CIK must be provided", type_name="ArtifactValidationError")
 
     payload: Any = requests[0] if len(requests) == 1 else requests
-    raw_response = _post_json("/api/v2/companies/edgar", payload)
+    raw_response = _post_json(MARKETIO_ROUTE_EDGAR_RAW, payload)
     responses: List[Any] = raw_response if isinstance(raw_response, list) else [raw_response]
 
     if len(responses) != len(requests):
@@ -488,7 +647,7 @@ def fetch_edgar_source(
         request_meta = requests[idx] if idx < len(requests) else {}
         artifact: Dict[str, Any] = dict(response) if isinstance(response, dict) else {"payload": response}
 
-        ticker_candidate = request_meta.get("ticker")
+        ticker_candidate = artifact.get("ticker") or request_meta.get("ticker")
         ticker_list = artifact.get("tickers") if isinstance(artifact, dict) else None
         derived_ticker = (
             (ticker_candidate or "").upper()
@@ -506,7 +665,7 @@ def fetch_edgar_source(
         artifact["requested_ticker"] = ticker_candidate
         artifacts.append(artifact)
 
-    activity.heartbeat({"requested": len(requests), "received": len(artifacts)})
+    _activity_heartbeat({"requested": len(requests), "received": len(artifacts)})
     return _save_artifacts(
         artifacts,
         layer="source",
@@ -520,7 +679,8 @@ def fetch_edgar_source(
 
 @activity.defn(name="fetch_fundamentals_raw")
 def fetch_fundamentals_raw(
-    tickers: List[str],
+    ticker: str,
+    ric: Optional[str],
     start_date: str,
     end_date: str,
     instrument: Optional[str] = None,
@@ -528,16 +688,13 @@ def fetch_fundamentals_raw(
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     execution_meta = _execution_metadata_from_payload(execution)
-    payload = {
-        "tickers": tickers,
-        "start_date": start_date,
-        "end_date": end_date,
-        "collect": True,
-    }
-    data = _post_json("/api/v2/companies/fundamentals", payload)
-    activity.heartbeat({"count": len(data)})
+    payload = _identifier_payload(ticker=ticker, ric=ric)
+    payload.update({"start_date": start_date, "end_date": end_date})
+    data = _post_json(MARKETIO_ROUTE_FUNDAMENTALS_RAW, payload)
+    artifacts = _artifact_list(data)
+    _activity_heartbeat({"count": len(artifacts)})
     return _save_artifacts(
-        data,
+        artifacts,
         layer="source",
         dataset="fundamentals",
         execution=execution_meta,
@@ -553,8 +710,21 @@ def fetch_fundamentals_stage(
     model_version: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
+    raise _non_retryable(
+        "Fundamentals staging is no longer supported by the Marketio API",
+        type_name="UnsupportedMode",
+    )
+
+
+@activity.defn(name="fetch_fundamentals_prod")
+def fetch_fundamentals_prod(
+    raw_artifacts: List[dict],
+    instrument: Optional[str] = None,
+    model_version: Optional[str] = None,
+    execution: Optional[Dict[str, Any]] = None,
+) -> List[dict]:
     if not raw_artifacts:
-        raise _non_retryable("No raw fundamentals provided for staging step", type_name="ArtifactValidationError")
+        raise _non_retryable("No raw fundamentals provided for production step", type_name="ArtifactValidationError")
     execution_meta = _execution_metadata_from_payload(execution)
 
     results: List[dict] = []
@@ -562,56 +732,17 @@ def fetch_fundamentals_stage(
         ticker = _required_ticker(artifact_ref, "raw fundamentals")
         start_date = artifact_ref.get("start_date")
         end_date = artifact_ref.get("end_date")
-        data_block = _load_artifact_payload(artifact_ref, "Failed to load raw fundamentals")
-        payload = {
-            "tickers": [ticker],
-            "start_date": start_date,
-            "end_date": end_date,
-            "collect": False,
-            "data": data_block or [],
-        }
-        data = _post_json("/api/v2/companies/fundamentals/processed", payload)
-        logger.info("%s stage_input_loaded count=%s", _log_prefix(execution_meta, "fundamentals_stage", ticker), len(data_block))
-        activity.heartbeat({"ticker": ticker, "count": len(data)})
-        results.extend(data)
-    return _save_artifacts(
-        results,
-        layer="stage",
-        dataset="fundamentals",
-        execution=execution_meta,
-        instrument=instrument,
-        model_version=model_version,
-    )
-
-
-@activity.defn(name="fetch_fundamentals_prod")
-def fetch_fundamentals_prod(
-    staged_artifacts: List[dict],
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
-    execution: Optional[Dict[str, Any]] = None,
-) -> List[dict]:
-    if not staged_artifacts:
-        raise _non_retryable("No staged fundamentals provided for production step", type_name="ArtifactValidationError")
-    execution_meta = _execution_metadata_from_payload(execution)
-
-    results: List[dict] = []
-    for artifact_ref in staged_artifacts:
-        ticker = _required_ticker(artifact_ref, "staged fundamentals")
-        start_date = artifact_ref.get("start_date")
-        end_date = artifact_ref.get("end_date")
-        data_block = _load_artifact_payload(artifact_ref, "Failed to load staged fundamentals")
-        payload = {
-            "tickers": [ticker],
-            "start_date": start_date,
-            "end_date": end_date,
-            "collect": False,
-            "data": data_block or [],
-        }
-        data = _post_json("/api/v2/companies/fundamentals/production", payload)
-        logger.info("%s prod_input_loaded count=%s", _log_prefix(execution_meta, "fundamentals_prod", ticker), len(data_block))
-        activity.heartbeat({"ticker": ticker, "count": len(data)})
-        results.extend(data)
+        payload = _artifact_identifier_payload(artifact_ref)
+        payload.update({"start_date": start_date, "end_date": end_date})
+        data = _post_json(MARKETIO_ROUTE_FUNDAMENTALS_PROD, payload)
+        artifacts = _artifact_list(data)
+        logger.info(
+            "%s fundamentals_prod_request ric=%s",
+            _log_prefix(execution_meta, "fundamentals_prod", ticker),
+            payload.get("ric"),
+        )
+        _activity_heartbeat({"ticker": ticker, "count": len(artifacts)})
+        results.extend(artifacts)
     return _save_artifacts(
         results,
         layer="prod",
@@ -624,7 +755,8 @@ def fetch_fundamentals_prod(
 
 @activity.defn(name="fetch_intraday_raw")
 def fetch_intraday_raw(
-    tickers: List[str],
+    ticker: str,
+    ric: Optional[str],
     start_date: str,
     end_date: str,
     frequency: str,
@@ -633,21 +765,28 @@ def fetch_intraday_raw(
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     execution_meta = _execution_metadata_from_payload(execution)
-    payload = {
-        "tickers": tickers,
-        "start_date": start_date,
-        "end_date": end_date,
-        "frequency": frequency,
-        "collect": True,
-    }
-    data = _post_json("/api/v2/companies/intraday", payload)
-    activity.heartbeat({"count": len(data)})
+    payload = _identifier_payload(ticker=ticker, ric=ric)
+    payload.update(
+        {
+            "source": MARKETIO_MARKET_SOURCE_LSEG,
+            "start_date": start_date,
+            "end_date": end_date,
+            "frequency": MARKETIO_MARKET_FREQUENCY_DAILY,
+        }
+    )
+    artifacts = _fetch_market_daily_raw_with_empty_retry(
+        payload,
+        execution_meta,
+        ticker=ticker,
+        frequency=MARKETIO_MARKET_FREQUENCY_DAILY,
+    )
+    _activity_heartbeat({"count": len(artifacts)})
     return _save_artifacts(
-        data,
+        artifacts,
         layer="source",
         dataset="intraday",
         execution=execution_meta,
-        freq=frequency,
+        freq=MARKETIO_MARKET_FREQUENCY_DAILY,
         instrument=instrument,
         model_version=model_version,
     )
@@ -669,25 +808,29 @@ def fetch_intraday_prod(
         ticker = _required_ticker(artifact_ref, "raw intraday")
         start_date = artifact_ref.get("start_date")
         end_date = artifact_ref.get("end_date")
-        data_block = _load_artifact_payload(artifact_ref, "Failed to load raw intraday")
-        payload = {
-            "tickers": [ticker],
-            "start_date": start_date,
-            "end_date": end_date,
-            "frequency": frequency,
-            "collect": False,
-            "data": data_block or [],
-        }
-        data = _post_json("/api/v2/companies/intraday/production", payload)
-        logger.info("%s prod_input_loaded count=%s", _log_prefix(execution_meta, "intraday_prod", ticker), len(data_block))
-        activity.heartbeat({"ticker": ticker, "count": len(data)})
-        results.extend(data)
+        payload = _artifact_identifier_payload(artifact_ref)
+        payload.update(
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "frequency": MARKETIO_MARKET_FREQUENCY_DAILY,
+            }
+        )
+        data = _post_json(MARKETIO_ROUTE_MARKET_DAILY_PROD, payload)
+        artifacts = _artifact_list(data)
+        logger.info(
+            "%s intraday_prod_request ric=%s",
+            _log_prefix(execution_meta, "intraday_prod", ticker),
+            payload.get("ric"),
+        )
+        _activity_heartbeat({"ticker": ticker, "count": len(artifacts)})
+        results.extend(artifacts)
     return _save_artifacts(
         results,
         layer="prod",
         dataset="intraday",
         execution=execution_meta,
-        freq=frequency,
+        freq=MARKETIO_MARKET_FREQUENCY_DAILY,
         instrument=instrument,
         model_version=model_version,
     )

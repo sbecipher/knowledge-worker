@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 from models import (
     DEFAULT_INTRADAY_FREQUENCY,
@@ -12,6 +13,7 @@ from models import (
     DEFAULT_FUNDAMENTALS_MODE,
     ExecutionMetadata,
     MarketDataRequest,
+    normalize_intraday_frequency,
 )
 
 # Activity names are used instead of importing the activity module because the Temporal
@@ -63,7 +65,7 @@ def _request_from_workflow_args(
         tickers=tickers,
         start_date=start_date,
         end_date=end_date,
-        intraday_frequency=intraday_frequency,
+        intraday_frequency=normalize_intraday_frequency(intraday_frequency),
         fundamentals_mode=fundamentals_mode,
         intraday_mode=intraday_mode,
         edgar_source=edgar_source,
@@ -90,9 +92,37 @@ def _error_result(exc: Exception) -> Dict[str, str]:
 
 def _validate_request(request: MarketDataRequest) -> None:
     if request.metadata_only and request.edgar_only:
-        raise ValueError("metadata_only and edgar_only cannot both be true")
+        raise ApplicationError(
+            "metadata_only and edgar_only cannot both be true",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
     if not request.tickers:
-        raise ValueError("At least one ticker is required")
+        raise ApplicationError("At least one ticker is required", type="InvalidRequest", non_retryable=True)
+    if request.intraday_frequency != DEFAULT_INTRADAY_FREQUENCY:
+        raise ApplicationError(
+            "intraday_frequency must be one of: daily, eod",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
+    if request.fundamentals_mode == "stage":
+        raise ApplicationError(
+            "fundamentals_mode='stage' is no longer supported by the Marketio API",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
+    if request.fundamentals_mode not in {"none", "raw", "prod"}:
+        raise ApplicationError(
+            f"Unsupported fundamentals_mode: {request.fundamentals_mode}",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
+    if request.intraday_mode not in {"none", "raw", "prod"}:
+        raise ApplicationError(
+            f"Unsupported intraday_mode: {request.intraday_mode}",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
 
 
 @workflow.defn
@@ -158,6 +188,7 @@ class MarketDataWorkflow:
             return results
 
         ticker_ciks: Dict[str, str] = {}
+        ticker_rics: Dict[str, str] = {}
         if isinstance(metadata_result, dict):
             ciks_map = metadata_result.get("ciks") or {}
             if isinstance(ciks_map, dict):
@@ -166,15 +197,23 @@ class MarketDataWorkflow:
                     for ticker, cik in ciks_map.items()
                     if ticker and cik
                 }
+            rics_map = metadata_result.get("rics") or {}
+            if isinstance(rics_map, dict):
+                ticker_rics = {
+                    str(ticker).upper(): str(ric).strip().upper()
+                    for ticker, ric in rics_map.items()
+                    if ticker and ric
+                }
 
         do_edgar = request.edgar_only or request.edgar_source
-        do_fundamentals = request.fundamentals_mode in {"raw", "stage", "prod"} and not request.edgar_only
+        do_fundamentals = request.fundamentals_mode in {"raw", "prod"} and not request.edgar_only
         do_intraday = request.intraday_mode in {"raw", "prod"} and not request.edgar_only
 
         async def process_ticker(ticker: str) -> Dict[str, List[dict]]:
             ticker_results: Dict[str, List[dict]] = {}
             edgar_kwargs: Dict[str, List[str]] = {}
             cik_value = ticker_ciks.get(ticker.upper())
+            ric_value = ticker_rics.get(ticker.upper())
             if cik_value:
                 edgar_kwargs["ciks"] = [cik_value]
             else:
@@ -201,7 +240,8 @@ class MarketDataWorkflow:
                 await workflow.execute_activity(
                     FETCH_FUNDAMENTALS_RAW,
                     args=[
-                        [ticker],
+                        ticker,
+                        ric_value,
                         request.start_date,
                         request.end_date,
                         request.instrument,
@@ -214,21 +254,12 @@ class MarketDataWorkflow:
                 if do_fundamentals
                 else []
             )
-
-            if request.fundamentals_mode in {"stage", "prod"} and do_fundamentals:
-                fundamentals_stage = await workflow.execute_activity(
-                    FETCH_FUNDAMENTALS_STAGE,
-                    args=[fundamentals_raw, request.instrument, request.model_version, execution_payload],
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=LONG_RETRY,
-                )
-            else:
-                fundamentals_stage = []
+            fundamentals_stage: List[dict] = []
 
             if request.fundamentals_mode == "prod" and do_fundamentals:
                 fundamentals_prod = await workflow.execute_activity(
                     FETCH_FUNDAMENTALS_PROD,
-                    args=[fundamentals_stage, request.instrument, request.model_version, execution_payload],
+                    args=[fundamentals_raw, request.instrument, request.model_version, execution_payload],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
                 )
@@ -244,7 +275,8 @@ class MarketDataWorkflow:
                 await workflow.execute_activity(
                     FETCH_INTRADAY_RAW,
                     args=[
-                        [ticker],
+                        ticker,
+                        ric_value,
                         request.start_date,
                         request.end_date,
                         request.intraday_frequency,

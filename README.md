@@ -1,6 +1,6 @@
 # Marketio Temporal Pipeline
 
-Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR submissions, fundamentals, intraday) and writes artifacts to GCS in a hierarchical layout per instrument.
+Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR raw, fundamentals raw/production, and market daily raw/production) and writes artifacts to GCS in a hierarchical layout per instrument.
 
 This worker now uses:
 
@@ -61,16 +61,12 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
 - EDGAR submissions: `source/edgar/{TICKER}/{TICKER}.json`
 - Fundamentals:  
   - Raw: `source/fundamentals/{TICKER}/{start}_{end}.json`  
-  - Stage: `stage/fundamentals/{TICKER}/{start}_{end}.json`  
   - Prod: `prod/fundamentals/{TICKER}/{start}_{end}.json`  
-- Intraday (examples):  
-  - Daily (eod): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`  
-  - Weekly: `source/week/{TICKER}/{TICKER}_wk_{start}_{end}.json`  
-  - Monthly: `source/month/{TICKER}/{TICKER}_mth_{start}_{end}.json`  
-  - Quarterly: `source/quarter/{TICKER}/{TICKER}_qtr_{start}_{end}.json`  
-  - Prod mirrors the same directory and filename structure under `prod/`
+- Market daily artifacts are still stored under the existing `intraday` namespace for compatibility:
+  - Raw daily (eod layout): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
+  - Prod daily (eod layout): `prod/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
 
-Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Stage is required for fundamentals prod. Regular workflow runs do not update a canonical latest metadata file.
+Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Regular workflow runs do not update a canonical latest metadata file.
 
 ## Run the worker
 
@@ -258,15 +254,18 @@ Functions.
 
 - Health check `/health`
 - Metadata → write/upload run-scoped companies snapshot (always runs; EDGAR uses CIKs from metadata when present)
-- EDGAR submissions → per ticker raw SEC submissions (source=True) uploaded under `source/edgar/` when `--edgar-source/--edgar-only`
-- Fundamentals path: raw → stage → prod (from staged data) unless `--fundamentals-mode none` or `--edgar-only`
-- Intraday path: raw → prod unless `--intraday-mode none` or `--edgar-only`
+- EDGAR submissions → per ticker raw SEC submissions uploaded under `source/edgar/` when `--edgar-source/--edgar-only`
+- Fundamentals path: raw → prod unless `--fundamentals-mode none` or `--edgar-only`
+- Market daily path: raw → prod unless `--intraday-mode none` or `--edgar-only`
+- `intraday_frequency` accepts `daily` or `eod` only; `eod` is normalized to `daily` for the Marketio API
+- `fundamentals_mode=stage` and non-daily market frequencies are rejected as invalid requests
+- Market daily raw retries once locally when the API returns a 200 with unusable empty-field payloads, then falls back to Temporal activity retries if the response remains empty
 - Uploads JSON artifacts with metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `instrument`, `layer`, `ticker`, `window`).
 
 ## Activities
 
 - `check_marketio_health`: Ensure the Marketio API is reachable.
-- `fetch_companies_metadata`: Pull company metadata and upload the consolidated model file.
-- `fetch_edgar_source`: Download raw SEC submissions (source=True) for tickers/CIKs and upload per ticker under `source/edgar/`.
-- `fetch_fundamentals_raw` / `fetch_fundamentals_stage` / `fetch_fundamentals_prod`: Pull fundamentals through raw → stage → prod.
-- `fetch_intraday_raw` / `fetch_intraday_prod`: Pull historical prices and flatten them for production.
+- `fetch_companies_metadata`: Pull company metadata from `/api/v2/companies` and upload the consolidated model file.
+- `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under `source/edgar/`.
+- `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw` and `/api/v2/fundamentals/production`.
+- `fetch_intraday_raw` / `fetch_intraday_prod`: Pull market daily data from `/api/v2/market/daily/raw` and `/api/v2/market/daily/production`, while preserving the existing `intraday` storage layout.

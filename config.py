@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from google.cloud import secretmanager
+try:
+    from google.cloud import secretmanager
+except ImportError:  # pragma: no cover - optional during tests/local planning
+    secretmanager = None
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,9 @@ def _load_intrinio_api_key() -> str:
     if env_key:
         return env_key
     if not _env_bool("INTRINIO_SECRET_MANAGER_ENABLED", True):
+        return ""
+    if secretmanager is None:
+        logger.warning("google-cloud-secret-manager is unavailable; Intrinio API key lookup skipped")
         return ""
     secret_name = "projects/875978034496/secrets/marketio-data-api-intrinio/versions/latest"
     try:
