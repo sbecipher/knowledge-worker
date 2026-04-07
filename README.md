@@ -84,7 +84,94 @@ curl -s http://localhost:8080/healthz
 ```
 
 Keep the worker running and start workflows from another terminal using the
-client in `client/client.py` (or your Cloud Function).
+sibling `../client/` project (or your Cloud Function).
+
+### Example workstreams
+
+Run these from the sibling `client/` directory while the worker is running:
+
+- Metadata only:
+
+```bash
+python3 client.py \
+  --tickers AA \
+  --start-date 2026-04-01 \
+  --end-date 2026-04-01 \
+  --fundamentals-mode none \
+  --intraday-mode none \
+  --metadata-only
+```
+
+- EDGAR only:
+
+```bash
+python3 client.py \
+  --tickers AA \
+  --start-date 2026-04-01 \
+  --end-date 2026-04-01 \
+  --fundamentals-mode none \
+  --intraday-mode none \
+  --edgar-only
+```
+
+- Fundamentals raw only:
+
+```bash
+python3 client.py \
+  --tickers AA \
+  --start-date 2026-01-01 \
+  --end-date 2026-03-31 \
+  --fundamentals-mode raw \
+  --intraday-mode none
+```
+
+- Fundamentals production only:
+
+```bash
+python3 client.py \
+  --tickers AA \
+  --start-date 2026-01-01 \
+  --end-date 2026-03-31 \
+  --fundamentals-mode prod \
+  --intraday-mode none
+```
+
+- Market daily raw only:
+
+```bash
+python3 client.py \
+  --tickers AA \
+  --start-date 2026-04-02 \
+  --end-date 2026-04-02 \
+  --fundamentals-mode none \
+  --intraday-mode raw \
+  --intraday-frequency eod
+```
+
+- Market daily production only:
+
+```bash
+python3 client.py \
+  --tickers AA \
+  --start-date 2026-04-02 \
+  --end-date 2026-04-02 \
+  --fundamentals-mode none \
+  --intraday-mode prod \
+  --intraday-frequency daily
+```
+
+- Full run (metadata + fundamentals prod + market daily prod):
+
+```bash
+python3 client.py \
+  --tickers AA,NUE \
+  --start-date 2026-01-01 \
+  --end-date 2026-03-31 \
+  --fundamentals-mode prod \
+  --intraday-mode prod \
+  --intraday-frequency daily \
+  --edgar-source
+```
 
 ## Tests
 
@@ -227,10 +314,11 @@ sudo systemctl enable --now marketflow
 
 ## Client (Cloud Function)
 
-The workflow starter now lives in `client/` so it can be deployed separately
-(for example, as a Cloud Function in another project). The client uses the
-Temporal gRPC address and task queue from environment variables; all run-specific
-parameters can be passed via the request payload to your function.
+The workflow starter now lives in the sibling `../client/` project so it can be
+deployed separately (for example, as a Cloud Function in another project). The
+client uses the Temporal gRPC address and task queue from environment
+variables; all run-specific parameters can be passed via the request payload to
+your function.
 
 Minimum connection settings:
 
@@ -246,8 +334,8 @@ Inputs to pass per run (query/body → function args):
 tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,edgar_source,metadata_only,edgar_only,workflow_id,request_id
 ```
 
-See `client/README.md` for local CLI usage and examples.
-`client/function.py` exposes the `marketflow_handler` HTTP entrypoint for Cloud
+See the sibling client project's `README.md` for local CLI usage and examples.
+Its `function.py` exposes the `marketflow_handler` HTTP entrypoint for Cloud
 Functions.
 
 ## What the workflow does (per ticker)
