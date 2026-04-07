@@ -15,8 +15,8 @@ def test_models_snapshot_path_uses_request_suffix() -> None:
 
 def test_artifact_ref_round_trip_payload() -> None:
     ref = ArtifactRef(
-        uri="gs://bucket/source/fundamentals/AA/AA_20240101_20240131.json",
-        object_path="source/fundamentals/AA/AA_20240101_20240131.json",
+        uri="gs://bucket/source/fundamentals/AA/AA_fundamentals_20240101_20240131.json",
+        object_path="source/fundamentals/AA/AA_fundamentals_20240101_20240131.json",
         layer="source",
         dataset="fundamentals",
         instrument="mm-h5r1",
@@ -30,3 +30,26 @@ def test_artifact_ref_round_trip_payload() -> None:
         record_count=3,
     )
     assert ArtifactRef(**ref.to_payload()) == ref
+
+
+def test_fundamentals_path_uses_dataset_slug_between_ticker_and_dates() -> None:
+    path = build_object_path(
+        layer="source",
+        instrument="mm-h5r1",
+        dataset="fundamentals",
+        ticker="AA",
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+    )
+    assert path == "source/fundamentals/AA/AA_fundamentals_20240101_20240131.json"
+
+
+def test_edgar_path_uses_request_date_suffix() -> None:
+    path = build_object_path(
+        layer="source",
+        instrument="mm-h5r1",
+        dataset="edgar",
+        ticker="AA",
+        suffix="edgar_20260407",
+    )
+    assert path == "source/edgar/AA/AA_edgar_20260407.json"

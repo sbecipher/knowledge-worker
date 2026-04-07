@@ -114,17 +114,36 @@ def build_object_path(
         parts.append(safe_ticker)
     else:
         safe_ticker = ""
-    filename_parts = []
-    if ticker and dataset != "models":
-        filename_parts.append(safe_ticker)
-    if filename_freq_slug:
-        filename_parts.append(filename_freq_slug)
-    if start_date:
-        filename_parts.append(format_date(start_date))
-    if end_date:
-        filename_parts.append(format_date(end_date))
-    if suffix:
-        filename_parts.append(sanitize_path_segment(suffix))
+
+    if dataset == "edgar":
+        filename_parts = []
+        if safe_ticker:
+            filename_parts.append(safe_ticker)
+        if suffix:
+            filename_parts.append(sanitize_path_segment(suffix))
+    elif dataset == "fundamentals":
+        filename_parts = []
+        if safe_ticker:
+            filename_parts.append(safe_ticker)
+        filename_parts.append("fundamentals")
+        if start_date:
+            filename_parts.append(format_date(start_date))
+        if end_date:
+            filename_parts.append(format_date(end_date))
+        if suffix:
+            filename_parts.append(sanitize_path_segment(suffix))
+    else:
+        filename_parts = []
+        if ticker and dataset != "models":
+            filename_parts.append(safe_ticker)
+        if filename_freq_slug:
+            filename_parts.append(filename_freq_slug)
+        if start_date:
+            filename_parts.append(format_date(start_date))
+        if end_date:
+            filename_parts.append(format_date(end_date))
+        if suffix:
+            filename_parts.append(sanitize_path_segment(suffix))
     if not filename_parts:
         # Avoid ambiguous ".json" object names when metadata is incomplete.
         filename_parts.append("artifact")

@@ -1,4 +1,5 @@
 import base64
+from datetime import date
 import json
 import logging
 import threading
@@ -405,6 +406,9 @@ def _save_artifacts(
         ticker = artifact.get("ticker") or ""
         start_date = artifact.get("start_date")
         end_date = artifact.get("end_date")
+        filename_suffix: Optional[str] = None
+        if dataset == "edgar":
+            filename_suffix = f"edgar_{date.today().strftime('%Y%m%d')}"
         object_path = build_object_path(
             layer=layer,
             instrument=resolved_instrument,
@@ -413,6 +417,7 @@ def _save_artifacts(
             freq=freq or artifact.get("frequency"),
             start_date=start_date,
             end_date=end_date,
+            suffix=filename_suffix,
             prefix=SETTINGS.gcs_prefix,
         )
         local_path = _temp_path(object_path)

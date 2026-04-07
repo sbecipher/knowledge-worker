@@ -58,10 +58,10 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
 ## GCS layout (hierarchical)
 
 - Metadata snapshots: `prod/models/{INSTRUMENT}/{model_version}/{request_id}.json`
-- EDGAR submissions: `source/edgar/{TICKER}/{TICKER}.json`
+- EDGAR submissions: `source/edgar/{TICKER}/{TICKER}_edgar_{date}.json`
 - Fundamentals:  
-  - Raw: `source/fundamentals/{TICKER}/{start}_{end}.json`  
-  - Prod: `prod/fundamentals/{TICKER}/{start}_{end}.json`  
+  - Raw: `source/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
+  - Prod: `prod/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
 - Market daily artifacts are still stored under the existing `intraday` namespace for compatibility:
   - Raw daily (eod layout): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
   - Prod daily (eod layout): `prod/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
