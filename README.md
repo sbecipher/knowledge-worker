@@ -68,7 +68,7 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
   - Raw daily (eod layout): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
   - Prod daily (eod layout): `prod/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
 
-Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input, resolves identifiers only when needed, and persists metadata only when `metadata_only` or `metadata_mode=source` is requested. `universe_key` is required for full-universe, EDGAR, or metadata runs, but explicit-ticker intraday/fundamentals runs can omit it.
+Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input, resolves identifiers only when needed, and persists metadata only when `metadata_only` or `metadata_mode=source` is requested. `universe_key` is required for full-universe, EDGAR, or metadata runs, but explicit-ticker intraday/fundamentals runs can omit it. For non-EDGAR intraday/fundamentals runs, `active.json` is used only for ticker expansion, not as an implicit RIC override.
 
 ## Run the worker
 
@@ -355,7 +355,7 @@ Functions.
 ## What the workflow does (per ticker)
 
 - Health check `/health`
-- Active-universe expansion → load tickers/RICs from `active.json` only when the request omits tickers
+- Active-universe expansion → load tickers from `active.json` only when the request omits tickers
 - Identifier resolution → call `/api/v2/companies` only for EDGAR runs or when metadata persistence is requested
 - Metadata persistence → write per-ticker source artifacts + one manifest only for `--metadata-only` or `--metadata-mode source`
 - EDGAR submissions → per ticker raw SEC submissions uploaded under `source/edgar/` when `--edgar-source/--edgar-only`
@@ -369,7 +369,7 @@ Functions.
 ## Activities
 
 - `check_marketio_health`: Ensure the Marketio API is reachable.
-- `load_active_universe_index`: Read `prod/models/{universe_key}/active.json` for ticker expansion and active-universe RICs.
+- `load_active_universe_index`: Read `prod/models/{universe_key}/active.json` for full-universe ticker expansion.
 - `resolve_company_identifiers`: Pull company metadata from `/api/v2/companies` and return compact CIK/RIC routing data.
 - `persist_company_metadata`: Upload normalized per-ticker metadata artifacts and a run manifest under `source/metadata/`.
 - `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under `source/edgar/`.

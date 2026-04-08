@@ -157,18 +157,8 @@ class MarketDataWorkflow:
                     for ticker in active_index.get("tickers", [])
                     if str(ticker).strip()
                 ]
-                rics_map = active_index.get("rics") or {}
-                if isinstance(rics_map, dict):
-                    ticker_rics.update(
-                        {
-                            str(ticker).upper(): str(ric).strip().upper()
-                            for ticker, ric in rics_map.items()
-                            if ticker and ric
-                        }
-                    )
                 results["identifiers"]["active_source_uri"] = active_index.get("active_source_uri")
                 results["identifiers"]["active_source_object_path"] = active_index.get("active_source_object_path")
-                results["identifiers"]["rics"] = dict(ticker_rics)
 
         if not workflow_tickers:
             raise ApplicationError(

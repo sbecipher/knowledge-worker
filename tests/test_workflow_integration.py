@@ -264,7 +264,7 @@ def test_intraday_only_explicit_ticker_can_omit_universe_key() -> None:
     assert result["AA"]["intraday_raw"][0]["ticker"] == "AA"
 
 
-def test_full_universe_non_edgar_uses_active_universe_index() -> None:
+def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only() -> None:
     captured: Dict[str, Any] = {}
 
     @activity.defn(name="check_marketio_health")
@@ -317,8 +317,9 @@ def test_full_universe_non_edgar_uses_active_universe_index() -> None:
     )
 
     assert captured["ticker"] == "AA"
-    assert captured["ric"] == "AA.N"
+    assert captured["ric"] is None
     assert result["identifiers"]["active_source_object_path"] == "prod/models/mmh5r1/active.json"
+    assert result["identifiers"]["rics"] == {}
     assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
 
 
