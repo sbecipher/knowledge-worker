@@ -223,6 +223,47 @@ def test_intraday_only_explicit_ticker_skips_identifier_resolution() -> None:
     assert result["identifiers"]["ciks"] == {}
 
 
+def test_intraday_only_explicit_ticker_can_omit_universe_key() -> None:
+    captured: Dict[str, Any] = {}
+
+    @activity.defn(name="check_marketio_health")
+    def check_marketio_health(execution: Dict[str, Any]) -> None:
+        return None
+
+    @activity.defn(name="fetch_intraday_raw")
+    def fetch_intraday_raw(
+        ticker: str,
+        ric: str,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        captured["ticker"] = ticker
+        captured["universe_key"] = universe_key
+        ref = _artifact_ref(ticker, "intraday", "source")
+        return [ref]
+
+    result = asyncio.run(
+        _run_workflow(
+            {
+                "tickers": ["AA"],
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "fundamentals_mode": "none",
+                "intraday_mode": "raw",
+                "request_id": "req-intraday-no-universe",
+            },
+            [check_marketio_health, fetch_intraday_raw],
+        )
+    )
+
+    assert captured["ticker"] == "AA"
+    assert captured["universe_key"] is None
+    assert result["AA"]["intraday_raw"][0]["ticker"] == "AA"
+
+
 def test_full_universe_non_edgar_uses_active_universe_index() -> None:
     captured: Dict[str, Any] = {}
 

@@ -58,11 +58,22 @@ def _validate_request(request: MarketDataRequest) -> None:
             type="InvalidRequest",
             non_retryable=True,
         )
-    if not request.universe_key:
-        raise ApplicationError("universe_key is required", type="InvalidRequest", non_retryable=True)
     if request.metadata_mode not in {"none", "source"}:
         raise ApplicationError(
             f"Unsupported metadata_mode: {request.metadata_mode}",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
+    requires_universe_key = (
+        not request.tickers
+        or request.metadata_only
+        or request.metadata_mode == "source"
+        or request.edgar_only
+        or request.edgar_source
+    )
+    if requires_universe_key and not request.universe_key:
+        raise ApplicationError(
+            "universe_key is required for metadata, EDGAR, or full-universe runs",
             type="InvalidRequest",
             non_retryable=True,
         )

@@ -20,7 +20,7 @@ def normalize_intraday_frequency(value: Any) -> str:
 
 @dataclass(frozen=True)
 class MarketDataRequest:
-    universe_key: str
+    universe_key: Optional[str]
     tickers: List[str]
     start_date: str
     end_date: str
@@ -41,7 +41,7 @@ class MarketDataRequest:
         if metadata_only:
             metadata_mode = "source"
         return cls(
-            universe_key=str(payload["universe_key"]).strip().lower(),
+            universe_key=_optional_str(payload.get("universe_key")),
             tickers=[str(ticker).strip().upper() for ticker in payload.get("tickers", []) if str(ticker).strip()],
             start_date=str(payload["start_date"]),
             end_date=str(payload["end_date"]),

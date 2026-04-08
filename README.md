@@ -68,7 +68,7 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
   - Raw daily (eod layout): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
   - Prod daily (eod layout): `prod/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
 
-Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input, resolves identifiers only when needed, and persists metadata only when `metadata_only` or `metadata_mode=source` is requested.
+Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input, resolves identifiers only when needed, and persists metadata only when `metadata_only` or `metadata_mode=source` is requested. `universe_key` is required for full-universe, EDGAR, or metadata runs, but explicit-ticker intraday/fundamentals runs can omit it.
 
 ## Run the worker
 

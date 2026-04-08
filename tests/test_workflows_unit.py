@@ -19,6 +19,69 @@ def test_validate_request_rejects_conflicting_modes() -> None:
     assert exc_info.value.non_retryable is True
 
 
+def test_validate_request_allows_missing_universe_key_for_explicit_ticker_non_metadata_non_edgar_run() -> None:
+    request = MarketDataRequest(
+        universe_key=None,
+        tickers=["AA"],
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+        fundamentals_mode="raw",
+        intraday_mode="none",
+    )
+    _validate_request(request)
+
+
+def test_validate_request_requires_universe_key_for_full_universe_run() -> None:
+    request = MarketDataRequest(
+        universe_key=None,
+        tickers=[],
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+        fundamentals_mode="raw",
+        intraday_mode="none",
+    )
+    with pytest.raises(
+        ApplicationError,
+        match="universe_key is required for metadata, EDGAR, or full-universe runs",
+    ) as exc_info:
+        _validate_request(request)
+    assert exc_info.value.non_retryable is True
+
+
+def test_validate_request_requires_universe_key_for_edgar_run() -> None:
+    request = MarketDataRequest(
+        universe_key=None,
+        tickers=["AA"],
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+        edgar_source=True,
+    )
+    with pytest.raises(
+        ApplicationError,
+        match="universe_key is required for metadata, EDGAR, or full-universe runs",
+    ) as exc_info:
+        _validate_request(request)
+    assert exc_info.value.non_retryable is True
+
+
+def test_validate_request_requires_universe_key_for_metadata_persistence() -> None:
+    request = MarketDataRequest(
+        universe_key=None,
+        tickers=["AA"],
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+        metadata_mode="source",
+        fundamentals_mode="none",
+        intraday_mode="none",
+    )
+    with pytest.raises(
+        ApplicationError,
+        match="universe_key is required for metadata, EDGAR, or full-universe runs",
+    ) as exc_info:
+        _validate_request(request)
+    assert exc_info.value.non_retryable is True
+
+
 def test_market_data_request_normalizes_eod_frequency() -> None:
     request = MarketDataRequest.from_payload(
         {
