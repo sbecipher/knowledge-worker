@@ -19,6 +19,7 @@ def normalize_intraday_frequency(value: Any) -> str:
 
 @dataclass(frozen=True)
 class MarketDataRequest:
+    universe_key: str
     tickers: List[str]
     start_date: str
     end_date: str
@@ -28,14 +29,13 @@ class MarketDataRequest:
     edgar_source: bool = False
     metadata_only: bool = False
     edgar_only: bool = False
-    instrument: Optional[str] = None
-    model_version: Optional[str] = None
     request_id: Optional[str] = None
     max_concurrent_tickers: int = DEFAULT_MAX_CONCURRENT_TICKERS
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "MarketDataRequest":
         return cls(
+            universe_key=str(payload["universe_key"]).strip().lower(),
             tickers=[str(ticker).strip().upper() for ticker in payload.get("tickers", []) if str(ticker).strip()],
             start_date=str(payload["start_date"]),
             end_date=str(payload["end_date"]),
@@ -45,8 +45,6 @@ class MarketDataRequest:
             edgar_source=bool(payload.get("edgar_source", False)),
             metadata_only=bool(payload.get("metadata_only", False)),
             edgar_only=bool(payload.get("edgar_only", False)),
-            instrument=_optional_str(payload.get("instrument")),
-            model_version=_optional_str(payload.get("model_version")),
             request_id=_optional_str(payload.get("request_id")),
             max_concurrent_tickers=max(1, int(payload.get("max_concurrent_tickers") or DEFAULT_MAX_CONCURRENT_TICKERS)),
         )
@@ -71,8 +69,7 @@ class ArtifactRef:
     object_path: str
     layer: str
     dataset: str
-    instrument: str
-    model_version: str
+    universe_key: str
     request_id: str
     workflow_id: str
     workflow_run_id: str

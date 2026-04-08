@@ -59,17 +59,48 @@ def test_fetch_companies_metadata_uses_current_route_and_builds_cik_and_ric_maps
         ]
 
     monkeypatch.setattr(activities, "_post_json", fake_post)
+    monkeypatch.setattr(
+        activities.UPLOADER,
+        "download_json",
+        lambda object_path: [{"ticker": "AA", "ric": "AA", "name": "Alcoa"}],
+    )
 
     result = activities.fetch_companies_metadata(
         tickers=["AA"],
-        instrument="mm-h5r1",
-        model_version="metadata",
+        universe_key="mmh5r1",
         execution=_execution_payload(),
     )
 
     assert captured_calls == [(activities.MARKETIO_ROUTE_COMPANIES, {"tickers": ["AA"]})]
     assert result["ciks"] == {"AA": "0001675149"}
     assert result["rics"] == {"AA": "AA.N"}
+    assert result["object_path"] == "prod/models/mmh5r1/metadata/req-123.json"
+    assert result["active_source_object_path"] == "prod/models/mmh5r1/active.json"
+
+
+def test_fetch_companies_metadata_uses_active_universe_when_tickers_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_calls: List[tuple[str, Dict[str, Any]]] = []
+
+    def fake_post(endpoint: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        captured_calls.append((endpoint, payload))
+        return [{"ticker": "AA", "cik_number": "0001675149", "primary_ric": "AA.N"}]
+
+    monkeypatch.setattr(activities, "_post_json", fake_post)
+    monkeypatch.setattr(
+        activities.UPLOADER,
+        "download_json",
+        lambda object_path: [{"ticker": "AA"}, {"ticker": "NUE"}],
+    )
+
+    result = activities.fetch_companies_metadata(universe_key="mmh5r1", execution=_execution_payload())
+
+    assert captured_calls == [
+        (activities.MARKETIO_ROUTE_COMPANIES, {"tickers": ["AA", "NUE"]})
+    ]
+    assert result["tickers"] == ["AA", "NUE"]
+    assert result["ciks"] == {"AA": "0001675149"}
 
 
 def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) -> None:

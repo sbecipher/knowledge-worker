@@ -7,6 +7,7 @@ from workflows import _validate_request
 
 def test_validate_request_rejects_conflicting_modes() -> None:
     request = MarketDataRequest(
+        universe_key="mmh5r1",
         tickers=["AA"],
         start_date="2024-01-01",
         end_date="2024-01-31",
@@ -21,6 +22,7 @@ def test_validate_request_rejects_conflicting_modes() -> None:
 def test_market_data_request_normalizes_eod_frequency() -> None:
     request = MarketDataRequest.from_payload(
         {
+            "universe_key": "mmh5r1",
             "tickers": ["AA"],
             "start_date": "2024-01-01",
             "end_date": "2024-01-31",
@@ -32,6 +34,7 @@ def test_market_data_request_normalizes_eod_frequency() -> None:
 
 def test_validate_request_rejects_non_daily_intraday_frequency() -> None:
     request = MarketDataRequest(
+        universe_key="mmh5r1",
         tickers=["AA"],
         start_date="2024-01-01",
         end_date="2024-01-31",
@@ -44,6 +47,7 @@ def test_validate_request_rejects_non_daily_intraday_frequency() -> None:
 
 def test_validate_request_rejects_removed_fundamentals_stage_mode() -> None:
     request = MarketDataRequest(
+        universe_key="mmh5r1",
         tickers=["AA"],
         start_date="2024-01-01",
         end_date="2024-01-31",

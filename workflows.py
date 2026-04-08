@@ -1,6 +1,6 @@
 import asyncio
 from datetime import timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -8,12 +8,8 @@ from temporalio.exceptions import ApplicationError
 
 from models import (
     DEFAULT_INTRADAY_FREQUENCY,
-    DEFAULT_INTRADAY_MODE,
-    DEFAULT_MAX_CONCURRENT_TICKERS,
-    DEFAULT_FUNDAMENTALS_MODE,
     ExecutionMetadata,
     MarketDataRequest,
-    normalize_intraday_frequency,
 )
 
 # Activity names are used instead of importing the activity module because the Temporal
@@ -41,43 +37,6 @@ LONG_RETRY = RetryPolicy(
 )
 
 
-def _request_from_workflow_args(
-    request_or_tickers: Any,
-    start_date: Optional[str],
-    end_date: Optional[str],
-    intraday_frequency: str,
-    fundamentals_mode: str,
-    intraday_mode: str,
-    edgar_source: bool,
-    metadata_only: bool,
-    edgar_only: bool,
-    instrument: Optional[str],
-    model_version: Optional[str],
-    request_id: Optional[str],
-    max_concurrent_tickers: Optional[int],
-) -> MarketDataRequest:
-    if isinstance(request_or_tickers, dict):
-        return MarketDataRequest.from_payload(request_or_tickers)
-    if start_date is None or end_date is None:
-        raise ValueError("start_date and end_date are required")
-    tickers = [str(ticker).strip().upper() for ticker in request_or_tickers if str(ticker).strip()]
-    return MarketDataRequest(
-        tickers=tickers,
-        start_date=start_date,
-        end_date=end_date,
-        intraday_frequency=normalize_intraday_frequency(intraday_frequency),
-        fundamentals_mode=fundamentals_mode,
-        intraday_mode=intraday_mode,
-        edgar_source=edgar_source,
-        metadata_only=metadata_only,
-        edgar_only=edgar_only,
-        instrument=instrument,
-        model_version=model_version,
-        request_id=request_id,
-        max_concurrent_tickers=max_concurrent_tickers or DEFAULT_MAX_CONCURRENT_TICKERS,
-    )
-
-
 def _error_result(exc: Exception) -> Dict[str, str]:
     cause = getattr(exc, "cause", None)
     if cause is not None:
@@ -97,8 +56,8 @@ def _validate_request(request: MarketDataRequest) -> None:
             type="InvalidRequest",
             non_retryable=True,
         )
-    if not request.tickers:
-        raise ApplicationError("At least one ticker is required", type="InvalidRequest", non_retryable=True)
+    if not request.universe_key:
+        raise ApplicationError("universe_key is required", type="InvalidRequest", non_retryable=True)
     if request.intraday_frequency != DEFAULT_INTRADAY_FREQUENCY:
         raise ApplicationError(
             "intraday_frequency must be one of: daily, eod",
@@ -128,37 +87,8 @@ def _validate_request(request: MarketDataRequest) -> None:
 @workflow.defn
 class MarketDataWorkflow:
     @workflow.run
-    async def run(
-        self,
-        request_or_tickers: Any,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        intraday_frequency: str = DEFAULT_INTRADAY_FREQUENCY,
-        fundamentals_mode: str = DEFAULT_FUNDAMENTALS_MODE,
-        intraday_mode: str = DEFAULT_INTRADAY_MODE,
-        edgar_source: bool = False,
-        metadata_only: bool = False,
-        edgar_only: bool = False,
-        instrument: Optional[str] = None,
-        model_version: Optional[str] = None,
-        request_id: Optional[str] = None,
-        max_concurrent_tickers: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        request = _request_from_workflow_args(
-            request_or_tickers=request_or_tickers,
-            start_date=start_date,
-            end_date=end_date,
-            intraday_frequency=intraday_frequency,
-            fundamentals_mode=fundamentals_mode,
-            intraday_mode=intraday_mode,
-            edgar_source=edgar_source,
-            metadata_only=metadata_only,
-            edgar_only=edgar_only,
-            instrument=instrument,
-            model_version=model_version,
-            request_id=request_id,
-            max_concurrent_tickers=max_concurrent_tickers,
-        )
+    async def run(self, request_payload: Dict[str, Any]) -> Dict[str, Any]:
+        request = MarketDataRequest.from_payload(request_payload)
         _validate_request(request)
 
         info = workflow.info()
@@ -178,7 +108,7 @@ class MarketDataWorkflow:
 
         metadata_result = await workflow.execute_activity(
             FETCH_COMPANIES_METADATA,
-            args=[request.tickers, request.instrument, request.model_version, execution_payload],
+            args=[request.tickers, request.universe_key, execution_payload],
             start_to_close_timeout=timedelta(minutes=2),
             retry_policy=SHORT_RETRY,
         )
@@ -204,6 +134,13 @@ class MarketDataWorkflow:
                     for ticker, ric in rics_map.items()
                     if ticker and ric
                 }
+        workflow_tickers = request.tickers
+        if not workflow_tickers and isinstance(metadata_result, dict):
+            workflow_tickers = [
+                str(ticker).upper()
+                for ticker in metadata_result.get("tickers", [])
+                if str(ticker).strip()
+            ]
 
         do_edgar = request.edgar_only or request.edgar_source
         do_fundamentals = request.fundamentals_mode in {"raw", "prod"} and not request.edgar_only
@@ -225,8 +162,7 @@ class MarketDataWorkflow:
                     args=[
                         edgar_kwargs.get("tickers"),
                         edgar_kwargs.get("ciks"),
-                        request.instrument,
-                        request.model_version,
+                        request.universe_key,
                         execution_payload,
                     ],
                     start_to_close_timeout=timedelta(minutes=3),
@@ -244,8 +180,7 @@ class MarketDataWorkflow:
                         ric_value,
                         request.start_date,
                         request.end_date,
-                        request.instrument,
-                        request.model_version,
+                        request.universe_key,
                         execution_payload,
                     ],
                     start_to_close_timeout=timedelta(minutes=5),
@@ -259,7 +194,7 @@ class MarketDataWorkflow:
             if request.fundamentals_mode == "prod" and do_fundamentals:
                 fundamentals_prod = await workflow.execute_activity(
                     FETCH_FUNDAMENTALS_PROD,
-                    args=[fundamentals_raw, request.instrument, request.model_version, execution_payload],
+                    args=[fundamentals_raw, request.universe_key, execution_payload],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
                 )
@@ -280,8 +215,7 @@ class MarketDataWorkflow:
                         request.start_date,
                         request.end_date,
                         request.intraday_frequency,
-                        request.instrument,
-                        request.model_version,
+                        request.universe_key,
                         execution_payload,
                     ],
                     start_to_close_timeout=timedelta(minutes=5),
@@ -297,8 +231,7 @@ class MarketDataWorkflow:
                     args=[
                         intraday_raw,
                         request.intraday_frequency,
-                        request.instrument,
-                        request.model_version,
+                        request.universe_key,
                         execution_payload,
                     ],
                     start_to_close_timeout=timedelta(minutes=5),
@@ -317,9 +250,9 @@ class MarketDataWorkflow:
             async with semaphore:
                 return await process_ticker(ticker)
 
-        tasks = [process_ticker_limited(ticker) for ticker in request.tickers]
+        tasks = [process_ticker_limited(ticker) for ticker in workflow_tickers]
         ticker_outputs = await asyncio.gather(*tasks, return_exceptions=True)
-        for ticker, output in zip(request.tickers, ticker_outputs):
+        for ticker, output in zip(workflow_tickers, ticker_outputs):
             if isinstance(output, Exception):
                 results[ticker] = [_error_result(output)]
             else:

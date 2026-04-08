@@ -15,7 +15,14 @@ from temporalio.exceptions import ApplicationError
 
 from config import load_settings
 from models import ArtifactRef, ExecutionMetadata
-from storage_utils import GCSUploader, build_object_path, ensure_dir, format_date, write_json
+from storage_utils import (
+    GCSUploader,
+    build_active_universe_object_path,
+    build_object_path,
+    ensure_dir,
+    format_date,
+    write_json,
+)
 
 logger = logging.getLogger(__name__)
 SETTINGS = load_settings()
@@ -110,14 +117,9 @@ def _log_prefix(execution: ExecutionMetadata, stage: str, ticker: Optional[str] 
     return " ".join(parts)
 
 
-def _resolve_instrument(instrument: Optional[str]) -> str:
-    value = (instrument or "").strip()
-    return value.lower() if value else SETTINGS.instrument
-
-
-def _resolve_model_version(model_version: Optional[str]) -> str:
-    value = (model_version or "").strip()
-    return value if value else SETTINGS.model_version
+def _resolve_universe_key(universe_key: Optional[str]) -> str:
+    value = (universe_key or "").strip()
+    return value.lower() if value else SETTINGS.universe_key
 
 
 def _metadata_base(
@@ -128,16 +130,13 @@ def _metadata_base(
     start: Optional[str],
     end: Optional[str],
     freq: Optional[str],
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
 ) -> Dict[str, str]:
-    resolved_instrument = _resolve_instrument(instrument)
-    resolved_model_version = _resolve_model_version(model_version)
+    resolved_universe_key = _resolve_universe_key(universe_key)
     meta = {
         "layer": layer,
         "dataset": dataset,
-        "instrument": resolved_instrument,
-        "model_version": resolved_model_version,
+        "universe_key": resolved_universe_key,
         "request_id": execution.request_id,
         "workflow_id": execution.workflow_id,
         "workflow_run_id": execution.workflow_run_id,
@@ -152,6 +151,43 @@ def _metadata_base(
     if freq:
         meta["frequency"] = freq.lower()
     return meta
+
+
+def _object_uri(object_path: str) -> str:
+    if UPLOADER.bucket_name:
+        return f"gs://{UPLOADER.bucket_name}/{object_path}"
+    return object_path
+
+
+def _normalized_ticker_list(tickers: Optional[List[str]]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for raw in tickers or []:
+        ticker = str(raw).strip().upper()
+        if ticker and ticker not in seen:
+            normalized.append(ticker)
+            seen.add(ticker)
+    return normalized
+
+
+def _load_active_universe_rows(universe_key: str) -> tuple[str, List[Dict[str, Any]]]:
+    object_path = build_active_universe_object_path(universe_key, prefix=SETTINGS.gcs_prefix)
+    try:
+        payload = UPLOADER.download_json(object_path)
+    except Exception as exc:
+        if exc.__class__.__name__ in {"NotFound", "FileNotFoundError"}:
+            raise _non_retryable(
+                f"Active universe file not found for universe_key={universe_key} at {object_path}",
+                type_name="ArtifactReferenceError",
+            ) from exc
+        raise
+    if not isinstance(payload, list):
+        raise _non_retryable(
+            f"Active universe payload must be a list for universe_key={universe_key}",
+            type_name="ArtifactValidationError",
+        )
+    rows = [dict(item) for item in payload if isinstance(item, dict)]
+    return object_path, rows
 
 
 def _jwt_exp(token: str) -> Optional[int]:
@@ -386,11 +422,9 @@ def _save_artifacts(
     execution: ExecutionMetadata,
     extra_meta: Optional[Dict[str, str]] = None,
     freq: Optional[str] = None,
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
 ) -> List[dict]:
-    resolved_instrument = _resolve_instrument(instrument)
-    resolved_model_version = _resolve_model_version(model_version)
+    resolved_universe_key = _resolve_universe_key(universe_key)
     summaries: List[dict] = []
     for artifact in artifacts:
         data_items = artifact.get("data")
@@ -411,8 +445,8 @@ def _save_artifacts(
             filename_suffix = f"edgar_{date.today().strftime('%Y%m%d')}"
         object_path = build_object_path(
             layer=layer,
-            instrument=resolved_instrument,
             dataset=dataset,
+            universe_key=resolved_universe_key,
             ticker=ticker,
             freq=freq or artifact.get("frequency"),
             start_date=start_date,
@@ -430,8 +464,7 @@ def _save_artifacts(
             start_date,
             end_date,
             freq or artifact.get("frequency"),
-            instrument=resolved_instrument,
-            model_version=resolved_model_version,
+            universe_key=resolved_universe_key,
         )
         if extra_meta:
             meta.update(extra_meta)
@@ -474,8 +507,7 @@ def _save_artifacts(
             object_path=object_path,
             layer=layer,
             dataset=dataset,
-            instrument=resolved_instrument,
-            model_version=resolved_model_version,
+            universe_key=resolved_universe_key,
             request_id=execution.request_id,
             workflow_id=execution.workflow_id,
             workflow_run_id=execution.workflow_run_id,
@@ -540,31 +572,94 @@ def check_marketio_health(execution: Dict[str, Any]) -> None:
 @activity.defn(name="fetch_companies_metadata")
 def fetch_companies_metadata(
     tickers: Optional[List[str]] = None,
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if _activity_is_cancelled():
         raise RuntimeError("fetch_companies_metadata cancelled")
     execution_meta = _execution_metadata_from_payload(execution)
-    payload: Dict[str, Any] = {"tickers": tickers} if tickers else {}
+    resolved_universe_key = _resolve_universe_key(universe_key)
+    active_object_path, active_rows = _load_active_universe_rows(resolved_universe_key)
+    active_rows_by_ticker = {
+        str(row.get("ticker") or "").strip().upper(): dict(row)
+        for row in active_rows
+        if str(row.get("ticker") or "").strip()
+    }
+    requested_tickers = _normalized_ticker_list(tickers)
+    if not requested_tickers:
+        requested_tickers = list(active_rows_by_ticker)
+    if not requested_tickers:
+        raise _non_retryable(
+            f"No tickers available for universe_key={resolved_universe_key}",
+            type_name="ArtifactValidationError",
+        )
 
+    payload: Dict[str, Any] = {"tickers": requested_tickers}
     data = _post_json(MARKETIO_ROUTE_COMPANIES, payload)
-    record_count = len(data) if isinstance(data, list) else 1
+    if isinstance(data, list):
+        metadata_rows = [item for item in data if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        metadata_rows = [data]
+    else:
+        metadata_rows = []
+    metadata_by_ticker = {
+        str(item.get("ticker") or "").strip().upper(): dict(item)
+        for item in metadata_rows
+        if str(item.get("ticker") or "").strip()
+    }
+
+    snapshot_rows: List[Dict[str, Any]] = []
+    missing_from_universe: List[str] = []
+    missing_metadata: List[str] = []
+    cik_map: Dict[str, str] = {}
+    ric_map: Dict[str, str] = {}
+    for ticker in requested_tickers:
+        base_row = dict(active_rows_by_ticker.get(ticker) or {"ticker": ticker})
+        if ticker not in active_rows_by_ticker:
+            missing_from_universe.append(ticker)
+        metadata_row = metadata_by_ticker.get(ticker)
+        if metadata_row is None:
+            missing_metadata.append(ticker)
+            merged_row = base_row
+        else:
+            merged_row = {**base_row, **metadata_row}
+        merged_row["ticker"] = ticker
+        snapshot_rows.append(merged_row)
+
+        cik_value = merged_row.get("cik_number") or merged_row.get("cik")
+        if cik_value:
+            cik_map[ticker] = str(cik_value).zfill(10)
+        ric_value = merged_row.get("primary_ric") or merged_row.get("ric")
+        if ric_value:
+            ric_map[ticker] = str(ric_value).strip().upper()
+
+    if missing_from_universe:
+        logger.warning(
+            "%s metadata_requested_tickers_not_in_active count=%s tickers=%s",
+            _log_prefix(execution_meta, "metadata"),
+            len(missing_from_universe),
+            missing_from_universe,
+        )
+    if missing_metadata:
+        logger.warning(
+            "%s metadata_missing_marketio_rows count=%s tickers=%s",
+            _log_prefix(execution_meta, "metadata"),
+            len(missing_metadata),
+            missing_metadata,
+        )
+
+    record_count = len(snapshot_rows)
     _activity_heartbeat({"count": record_count})
 
-    resolved_instrument = _resolve_instrument(instrument)
-    resolved_model_version = _resolve_model_version(model_version)
     object_path = build_object_path(
         layer="prod",
-        instrument=resolved_instrument,
         dataset="models",
-        model_version=resolved_model_version,
+        universe_key=resolved_universe_key,
         suffix=execution_meta.request_id,
         prefix=SETTINGS.gcs_prefix,
     )
     local_path = _temp_path(object_path)
-    write_json(local_path, data)
+    write_json(local_path, snapshot_rows)
     metadata = _metadata_base(
         "prod",
         "models",
@@ -573,8 +668,7 @@ def fetch_companies_metadata(
         None,
         None,
         None,
-        instrument=resolved_instrument,
-        model_version=resolved_model_version,
+        universe_key=resolved_universe_key,
     )
     uri = UPLOADER.upload_file(local_path, object_path, metadata=metadata)
     local_path_value = str(local_path)
@@ -582,35 +676,27 @@ def fetch_companies_metadata(
         local_path.unlink(missing_ok=True)
         local_path_value = None
 
-    cik_map = {
-        (item.get("ticker") or "").upper(): str(item.get("cik_number") or item.get("cik")).zfill(10)
-        for item in data
-        if isinstance(item, dict) and item.get("ticker") and (item.get("cik_number") or item.get("cik"))
-    } if isinstance(data, list) else {}
-    ric_map = {
-        (item.get("ticker") or "").upper(): str(item.get("primary_ric") or item.get("ric")).strip().upper()
-        for item in data
-        if isinstance(item, dict) and item.get("ticker") and (item.get("primary_ric") or item.get("ric"))
-    } if isinstance(data, list) else {}
-
     logger.info(
-        "%s metadata_saved uri=%s object_path=%s record_count=%s",
+        "%s metadata_saved uri=%s object_path=%s active_object_path=%s record_count=%s",
         _log_prefix(execution_meta, "metadata"),
         uri,
         object_path,
+        active_object_path,
         record_count,
     )
     return {
         "uri": uri,
         "object_path": object_path,
+        "active_source_uri": _object_uri(active_object_path),
+        "active_source_object_path": active_object_path,
         "record_count": record_count,
         "ciks": cik_map,
         "rics": ric_map,
+        "tickers": requested_tickers,
         "request_id": execution_meta.request_id,
         "workflow_id": execution_meta.workflow_id,
         "workflow_run_id": execution_meta.workflow_run_id,
-        "instrument": resolved_instrument,
-        "model_version": resolved_model_version,
+        "universe_key": resolved_universe_key,
         "local_path": local_path_value,
     }
 
@@ -619,8 +705,7 @@ def fetch_companies_metadata(
 def fetch_edgar_source(
     tickers: Optional[List[str]] = None,
     ciks: Optional[List[str]] = None,
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     if _activity_is_cancelled():
@@ -677,8 +762,7 @@ def fetch_edgar_source(
         dataset="edgar",
         execution=execution_meta,
         extra_meta={"edgar_source": "true"},
-        instrument=instrument,
-        model_version=model_version,
+        universe_key=universe_key,
     )
 
 
@@ -688,8 +772,7 @@ def fetch_fundamentals_raw(
     ric: Optional[str],
     start_date: str,
     end_date: str,
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     execution_meta = _execution_metadata_from_payload(execution)
@@ -703,16 +786,14 @@ def fetch_fundamentals_raw(
         layer="source",
         dataset="fundamentals",
         execution=execution_meta,
-        instrument=instrument,
-        model_version=model_version,
+        universe_key=universe_key,
     )
 
 
 @activity.defn(name="fetch_fundamentals_stage")
 def fetch_fundamentals_stage(
     raw_artifacts: List[dict],
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     raise _non_retryable(
@@ -724,8 +805,7 @@ def fetch_fundamentals_stage(
 @activity.defn(name="fetch_fundamentals_prod")
 def fetch_fundamentals_prod(
     raw_artifacts: List[dict],
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     if not raw_artifacts:
@@ -753,8 +833,7 @@ def fetch_fundamentals_prod(
         layer="prod",
         dataset="fundamentals",
         execution=execution_meta,
-        instrument=instrument,
-        model_version=model_version,
+        universe_key=universe_key,
     )
 
 
@@ -765,8 +844,7 @@ def fetch_intraday_raw(
     start_date: str,
     end_date: str,
     frequency: str,
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     execution_meta = _execution_metadata_from_payload(execution)
@@ -792,8 +870,7 @@ def fetch_intraday_raw(
         dataset="intraday",
         execution=execution_meta,
         freq=MARKETIO_MARKET_FREQUENCY_DAILY,
-        instrument=instrument,
-        model_version=model_version,
+        universe_key=universe_key,
     )
 
 
@@ -801,8 +878,7 @@ def fetch_intraday_raw(
 def fetch_intraday_prod(
     raw_artifacts: List[dict],
     frequency: str,
-    instrument: Optional[str] = None,
-    model_version: Optional[str] = None,
+    universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     if not raw_artifacts:
@@ -836,6 +912,5 @@ def fetch_intraday_prod(
         dataset="intraday",
         execution=execution_meta,
         freq=MARKETIO_MARKET_FREQUENCY_DAILY,
-        instrument=instrument,
-        model_version=model_version,
+        universe_key=universe_key,
     )

@@ -14,8 +14,7 @@ services:
 
       GCS_BUCKET: ${GCS_BUCKET:-sbecipher-intelligence}
       GCS_PREFIX: ${GCS_PREFIX:-}
-      INSTRUMENT: ${INSTRUMENT:-mm-h5r1}
-      MODEL_VERSION: ${MODEL_VERSION:-metadata}
+      UNIVERSE_KEY: ${UNIVERSE_KEY:-mmh5r1}
       TEMP_DIR: ${TEMP_DIR:-tmp}
       UPLOAD_ENABLED: ${UPLOAD_ENABLED:-true}
       CLEANUP_LOCAL_ARTIFACTS: ${CLEANUP_LOCAL_ARTIFACTS:-true}

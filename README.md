@@ -1,6 +1,6 @@
 # Marketio Temporal Pipeline
 
-Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR raw, fundamentals raw/production, and market daily raw/production) and writes artifacts to GCS in a hierarchical layout per instrument.
+Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR raw, fundamentals raw/production, and market daily raw/production) and writes artifacts to GCS in a hierarchical layout per universe.
 
 This worker now uses:
 
@@ -32,8 +32,7 @@ export MARKETIO_API_URL=http://localhost:8000
 export MARKETIO_REQUIRE_AUTH=false            # optional; auto-detects https/non-localhost when unset
 export GCS_BUCKET=sbecipher-intelligence
 export GCS_PREFIX=dev            # optional
-export INSTRUMENT=ssga-xme
-export MODEL_VERSION=1125v
+export UNIVERSE_KEY=mmh5r1
 export TEMP_DIR=tmp
 export UPLOAD_ENABLED=true
 export CLEANUP_LOCAL_ARTIFACTS=true            # optional; remove temp files after successful uploads
@@ -57,7 +56,8 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
 
 ## GCS layout (hierarchical)
 
-- Metadata snapshots: `prod/models/{INSTRUMENT}/{model_version}/{request_id}.json`
+- Active universe input: `prod/models/{UNIVERSE_KEY}/active.json`
+- Metadata snapshots: `prod/models/{UNIVERSE_KEY}/metadata/{request_id}.json`
 - EDGAR submissions: `source/edgar/{TICKER}/{TICKER}_edgar_{date}.json`
 - Fundamentals:  
   - Raw: `source/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
@@ -66,7 +66,7 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
   - Raw daily (eod layout): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
   - Prod daily (eod layout): `prod/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
 
-Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. Regular workflow runs do not update a canonical latest metadata file.
+Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input and writes request-scoped metadata snapshots without overwriting `active.json`.
 
 ## Run the worker
 
@@ -348,7 +348,7 @@ Functions.
 - `intraday_frequency` accepts `daily` or `eod` only; `eod` is normalized to `daily` for the Marketio API
 - `fundamentals_mode=stage` and non-daily market frequencies are rejected as invalid requests
 - Market daily raw retries once locally when the API returns a 200 with unusable empty-field payloads, then falls back to Temporal activity retries if the response remains empty
-- Uploads JSON artifacts with metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `instrument`, `layer`, `ticker`, `window`).
+- Uploads JSON artifacts with metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `universe_key`, `layer`, `ticker`, `window`).
 
 ## Activities
 

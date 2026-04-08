@@ -85,8 +85,7 @@ class Settings:
     marketio_require_auth: bool
     gcs_bucket: Optional[str]
     gcs_prefix: str
-    instrument: str
-    model_version: str
+    universe_key: str
     temp_dir: str
     upload_enabled: bool
     gcs_service_account_key_json: Optional[str]
@@ -109,8 +108,7 @@ def load_settings() -> Settings:
         marketio_require_auth = _infer_marketio_auth(marketio_api_url)
     gcs_bucket = _env_str("GCS_BUCKET", "sbecipher-intelligence")
     gcs_prefix = _env_str("GCS_PREFIX", "").strip("/")
-    instrument = _env_str("INSTRUMENT", "mm-h5r1").lower()
-    model_version = _env_str("MODEL_VERSION", "metadata")
+    universe_key = _env_str("UNIVERSE_KEY", "mmh5r1").strip().lower()
     temp_dir = _env_str("TEMP_DIR", "tmp")
     upload_enabled = _env_bool("UPLOAD_ENABLED", False)
     gcs_service_account_key_json = _load_gcs_service_account_json()
@@ -130,8 +128,7 @@ def load_settings() -> Settings:
         marketio_require_auth=marketio_require_auth,
         gcs_bucket=gcs_bucket,
         gcs_prefix=gcs_prefix,
-        instrument=instrument,
-        model_version=model_version,
+        universe_key=universe_key,
         temp_dir=temp_dir,
         upload_enabled=upload_enabled,
         gcs_service_account_key_json=gcs_service_account_key_json,

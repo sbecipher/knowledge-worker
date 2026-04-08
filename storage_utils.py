@@ -41,7 +41,7 @@ def sanitize_path_segment(value: str, fallback: str = "unknown") -> str:
     Restrict user/API-provided values to a safe path-segment character set.
 
     Why:
-    - Ticker/instrument/frequency values can originate from external systems.
+    - Ticker/universe/frequency values can originate from external systems.
     - Allowing path separators and special characters can corrupt object layout.
     - Normalizing here makes path behavior deterministic across all callers.
     """
@@ -69,13 +69,12 @@ def format_date(value: Any) -> str:
 
 def build_object_path(
     layer: str,
-    instrument: str,
     dataset: str,
+    universe_key: Optional[str] = None,
     ticker: Optional[str] = None,
     freq: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    model_version: Optional[str] = None,
     suffix: Optional[str] = None,
     prefix: str = "",
 ) -> str:
@@ -85,18 +84,14 @@ def build_object_path(
     parts = [p for p in [prefix, layer] if p]
 
     if dataset == "models":
-        if not model_version:
-            raise ValueError("model_version required for models path")
-        if not instrument:
-            raise ValueError("instrument required for models path")
+        if not universe_key:
+            raise ValueError("universe_key required for models path")
+        if not suffix:
+            raise ValueError("suffix required for models metadata path")
         parts.append(dataset)
-        parts.append(sanitize_path_segment(instrument.lower()))
-        model_slug = sanitize_path_segment(model_version)
-        if suffix:
-            parts.append(model_slug)
-            parts.append(f"{sanitize_path_segment(suffix)}.json")
-        else:
-            parts.append(f"{model_slug}.json")
+        parts.append(sanitize_path_segment(universe_key.lower()))
+        parts.append("metadata")
+        parts.append(f"{sanitize_path_segment(suffix)}.json")
         return str(PurePosixPath(*parts))
 
     freq_normalized = freq.lower() if isinstance(freq, str) else None
@@ -152,6 +147,14 @@ def build_object_path(
     return str(PurePosixPath(*parts))
 
 
+def build_active_universe_object_path(universe_key: str, prefix: str = "") -> str:
+    if not universe_key:
+        raise ValueError("universe_key required for active universe path")
+    parts = [p for p in [prefix, "prod", "models", sanitize_path_segment(universe_key.lower())] if p]
+    parts.append("active.json")
+    return str(PurePosixPath(*parts))
+
+
 class GCSUploader:
     """
     Thin wrapper around google-cloud-storage with optional dry-run.
@@ -165,31 +168,37 @@ class GCSUploader:
     ):
         self.bucket_name = bucket
         self.enabled = enabled and bool(bucket)
+        self._service_account_key_json = service_account_key_json
         self._client = None
-        if self.enabled:
-            if GCSClient is None:
-                raise RuntimeError("google-cloud-storage is required for uploads")
-            if service_account_key_json:
-                try:
-                    key_info = json.loads(service_account_key_json)
-                    self._client = GCSClient.from_service_account_info(key_info)
-                except (json.JSONDecodeError, TypeError) as e:
-                    raise ValueError("Failed to parse GCS service account JSON") from e
-            else:
-                self._client = GCSClient()
-            self._bucket = self._client.bucket(bucket)
+        self._bucket = None
+
+    def _ensure_bucket(self):
+        if self._bucket is not None:
+            return self._bucket
+        if not self.bucket_name:
+            raise RuntimeError("GCS bucket is not configured")
+        if GCSClient is None:
+            raise RuntimeError("google-cloud-storage is required for GCS access")
+        if self._service_account_key_json:
+            try:
+                key_info = json.loads(self._service_account_key_json)
+                self._client = GCSClient.from_service_account_info(key_info)
+            except (json.JSONDecodeError, TypeError) as e:
+                raise ValueError("Failed to parse GCS service account JSON") from e
         else:
-            self._bucket = None
+            self._client = GCSClient()
+        self._bucket = self._client.bucket(self.bucket_name)
+        return self._bucket
 
     def upload_file(self, local_path: Path, object_path: str, metadata: Optional[Dict[str, str]] = None) -> str:
         """
         Upload a JSON file to GCS, returning the gs:// URI. If disabled, returns a file URI.
         """
-        if not self.enabled or not self._bucket:
+        if not self.enabled:
             logger.info("Uploads disabled; skipping upload for %s", local_path)
             return f"file://{local_path}"
 
-        blob = self._bucket.blob(object_path)
+        blob = self._ensure_bucket().blob(object_path)
         if metadata:
             blob.metadata = metadata
         blob.content_type = "application/json"
@@ -199,9 +208,7 @@ class GCSUploader:
         return uri
 
     def download_json(self, object_path: str) -> Any:
-        if not self.enabled or not self._bucket:
-            raise RuntimeError("Uploads are disabled; cannot download artifact from GCS")
-        blob = self._bucket.blob(object_path)
+        blob = self._ensure_bucket().blob(object_path)
         payload = blob.download_as_bytes()
         return json.loads(payload.decode("utf-8"))
 

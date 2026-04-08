@@ -18,8 +18,7 @@ def _artifact_ref(ticker: str, dataset: str, layer: str, count: int = 1) -> Dict
         "object_path": f"{layer}/{dataset}/{ticker}/artifact.json",
         "layer": layer,
         "dataset": dataset,
-        "instrument": "mm-h5r1",
-        "model_version": "metadata",
+        "universe_key": "mmh5r1",
         "request_id": "req-123",
         "workflow_id": "wf-123",
         "workflow_run_id": "run-123",
@@ -72,19 +71,20 @@ def test_metadata_only_workflow() -> None:
     @activity.defn(name="fetch_companies_metadata")
     def fetch_companies_metadata(
         tickers: List[str],
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "ciks": {ticker: "0000123456" for ticker in tickers},
             "rics": {ticker: f"{ticker}.N" for ticker in tickers},
             "record_count": len(tickers),
+            "tickers": tickers,
         }
 
     result = asyncio.run(
         _run_workflow(
             {
+                "universe_key": "mmh5r1",
                 "tickers": ["AA"],
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
@@ -107,22 +107,21 @@ def test_edgar_only_workflow() -> None:
     @activity.defn(name="fetch_companies_metadata")
     def fetch_companies_metadata(
         tickers: List[str],
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "ciks": {ticker: "0000123456" for ticker in tickers},
             "rics": {ticker: f"{ticker}.N" for ticker in tickers},
             "record_count": len(tickers),
+            "tickers": tickers,
         }
 
     @activity.defn(name="fetch_edgar_source")
     def fetch_edgar_source(
         tickers: List[str],
         ciks: List[str],
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ticker = tickers[0] if tickers else "AA"
@@ -131,6 +130,7 @@ def test_edgar_only_workflow() -> None:
     result = asyncio.run(
         _run_workflow(
             {
+                "universe_key": "mmh5r1",
                 "tickers": ["AA"],
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
@@ -153,14 +153,14 @@ def test_full_pipeline_workflow() -> None:
     @activity.defn(name="fetch_companies_metadata")
     def fetch_companies_metadata(
         tickers: List[str],
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "ciks": {ticker: "0000123456" for ticker in tickers},
             "rics": {ticker: f"{ticker}.N" for ticker in tickers},
             "record_count": len(tickers),
+            "tickers": tickers,
         }
 
     @activity.defn(name="fetch_fundamentals_raw")
@@ -169,8 +169,7 @@ def test_full_pipeline_workflow() -> None:
         ric: str,
         start_date: str,
         end_date: str,
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ref = _artifact_ref(ticker, "fundamentals", "source")
@@ -181,8 +180,7 @@ def test_full_pipeline_workflow() -> None:
     @activity.defn(name="fetch_fundamentals_prod")
     def fetch_fundamentals_prod(
         raw_artifacts: List[Dict[str, Any]],
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         return [_artifact_ref(raw_artifacts[0]["ticker"], "fundamentals", "prod")]
@@ -194,8 +192,7 @@ def test_full_pipeline_workflow() -> None:
         start_date: str,
         end_date: str,
         frequency: str,
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ref = _artifact_ref(ticker, "intraday", "source")
@@ -207,8 +204,7 @@ def test_full_pipeline_workflow() -> None:
     def fetch_intraday_prod(
         raw_artifacts: List[Dict[str, Any]],
         frequency: str,
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         return [_artifact_ref(raw_artifacts[0]["ticker"], "intraday", "prod")]
@@ -216,6 +212,7 @@ def test_full_pipeline_workflow() -> None:
     result = asyncio.run(
         _run_workflow(
             {
+                "universe_key": "mmh5r1",
                 "tickers": ["AA"],
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
@@ -244,14 +241,14 @@ def test_partial_failure_isolated_per_ticker() -> None:
     @activity.defn(name="fetch_companies_metadata")
     def fetch_companies_metadata(
         tickers: List[str],
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "ciks": {ticker: "0000123456" for ticker in tickers},
             "rics": {ticker: f"{ticker}.N" for ticker in tickers},
             "record_count": len(tickers),
+            "tickers": tickers,
         }
 
     @activity.defn(name="fetch_fundamentals_raw")
@@ -260,8 +257,7 @@ def test_partial_failure_isolated_per_ticker() -> None:
         ric: str,
         start_date: str,
         end_date: str,
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         if ticker == "NUE":
@@ -278,8 +274,7 @@ def test_partial_failure_isolated_per_ticker() -> None:
         start_date: str,
         end_date: str,
         frequency: str,
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ref = _artifact_ref(ticker, "intraday", "source")
@@ -290,6 +285,7 @@ def test_partial_failure_isolated_per_ticker() -> None:
     result = asyncio.run(
         _run_workflow(
             {
+                "universe_key": "mmh5r1",
                 "tickers": ["AA", "NUE"],
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
@@ -314,14 +310,14 @@ def test_eod_frequency_is_normalized_before_intraday_activity() -> None:
     @activity.defn(name="fetch_companies_metadata")
     def fetch_companies_metadata(
         tickers: List[str],
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
             "ciks": {ticker: "0000123456" for ticker in tickers},
             "rics": {ticker: f"{ticker}.N" for ticker in tickers},
             "record_count": len(tickers),
+            "tickers": tickers,
         }
 
     @activity.defn(name="fetch_intraday_raw")
@@ -331,8 +327,7 @@ def test_eod_frequency_is_normalized_before_intraday_activity() -> None:
         start_date: str,
         end_date: str,
         frequency: str,
-        instrument: str,
-        model_version: str,
+        universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         captured["frequency"] = frequency
@@ -344,6 +339,7 @@ def test_eod_frequency_is_normalized_before_intraday_activity() -> None:
     result = asyncio.run(
         _run_workflow(
             {
+                "universe_key": "mmh5r1",
                 "tickers": ["AA"],
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
@@ -358,3 +354,58 @@ def test_eod_frequency_is_normalized_before_intraday_activity() -> None:
 
     assert captured["frequency"] == "daily"
     assert result["AA"]["intraday_raw"][0]["ticker"] == "AA"
+
+
+def test_downstream_processing_uses_metadata_tickers_when_request_omits_tickers() -> None:
+    captured: Dict[str, str] = {}
+
+    @activity.defn(name="check_marketio_health")
+    def check_marketio_health(execution: Dict[str, Any]) -> None:
+        return None
+
+    @activity.defn(name="fetch_companies_metadata")
+    def fetch_companies_metadata(
+        tickers: List[str],
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        assert tickers == []
+        return {
+            "ciks": {"AA": "0000123456"},
+            "rics": {"AA": "AA.N"},
+            "record_count": 1,
+            "tickers": ["AA"],
+        }
+
+    @activity.defn(name="fetch_fundamentals_raw")
+    def fetch_fundamentals_raw(
+        ticker: str,
+        ric: str,
+        start_date: str,
+        end_date: str,
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        captured["ticker"] = ticker
+        ref = _artifact_ref(ticker, "fundamentals", "source")
+        ref["ric"] = ric
+        ref["primary_ric"] = ric
+        return [ref]
+
+    result = asyncio.run(
+        _run_workflow(
+            {
+                "universe_key": "mmh5r1",
+                "tickers": [],
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "fundamentals_mode": "raw",
+                "intraday_mode": "none",
+                "request_id": "req-full-universe",
+            },
+            [check_marketio_health, fetch_companies_metadata, fetch_fundamentals_raw],
+        )
+    )
+
+    assert captured["ticker"] == "AA"
+    assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
