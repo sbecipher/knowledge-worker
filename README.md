@@ -7,7 +7,8 @@ This worker now uses:
 - A structured workflow request payload instead of positional workflow arguments
 - Synchronous Temporal activities executed on a worker thread pool
 - Durable artifact references (`gs://...` or local fallback) between stages
-- Run-scoped metadata snapshots keyed by `request_id`
+- Independent identifier resolution and metadata persistence
+- Per-ticker metadata source artifacts plus a run manifest when metadata persistence is requested
 
 ## Prerequisites
 
@@ -57,7 +58,8 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
 ## GCS layout (hierarchical)
 
 - Active universe input: `prod/models/{UNIVERSE_KEY}/active.json`
-- Metadata snapshots: `prod/models/{UNIVERSE_KEY}/metadata/{request_id}.json`
+- Metadata source artifacts: `source/metadata/{TICKER}/{TICKER}_{workflow_id}.json`
+- Metadata manifests: `source/metadata/manifests/{workflow_id}.json`
 - EDGAR submissions: `source/edgar/{TICKER}/{TICKER}_edgar_{date}.json`
 - Fundamentals:  
   - Raw: `source/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
@@ -66,7 +68,7 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
   - Raw daily (eod layout): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
   - Prod daily (eod layout): `prod/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
 
-Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input and writes request-scoped metadata snapshots without overwriting `active.json`.
+Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input, resolves identifiers only when needed, and persists metadata only when `metadata_only` or `metadata_mode=source` is requested.
 
 ## Run the worker
 
@@ -100,6 +102,18 @@ python3 client.py \
   --fundamentals-mode none \
   --intraday-mode none \
   --metadata-only
+```
+
+- Persist metadata alongside intraday:
+
+```bash
+python3 client.py \
+  --tickers AA \
+  --start-date 2026-04-01 \
+  --end-date 2026-04-01 \
+  --fundamentals-mode none \
+  --intraday-mode raw \
+  --metadata-mode source
 ```
 
 - EDGAR only:
@@ -160,7 +174,7 @@ python3 client.py \
   --intraday-frequency daily
 ```
 
-- Full run (metadata + fundamentals prod + market daily prod):
+- Full run (fundamentals prod + market daily prod):
 
 ```bash
 python3 client.py \
@@ -323,7 +337,7 @@ your function.
 Minimum connection settings:
 
 ```bash
-TEMPORAL_ADDRESS=temporal.sbecipher.io:7233
+TEMPORAL_ADDRESS=172.0.0.4:7233
 TEMPORAL_TASK_QUEUE=marketio-task-queue
 TEMPORAL_WORKFLOW=MarketDataWorkflow
 ```
@@ -331,7 +345,7 @@ TEMPORAL_WORKFLOW=MarketDataWorkflow
 Inputs to pass per run (query/body → function args):
 
 ```text
-tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,edgar_source,metadata_only,edgar_only,workflow_id,request_id
+tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,metadata_mode,edgar_source,metadata_only,edgar_only,workflow_id,request_id
 ```
 
 See the sibling client project's `README.md` for local CLI usage and examples.
@@ -341,7 +355,9 @@ Functions.
 ## What the workflow does (per ticker)
 
 - Health check `/health`
-- Metadata → write/upload run-scoped companies snapshot (always runs; EDGAR uses CIKs from metadata when present)
+- Active-universe expansion → load tickers/RICs from `active.json` only when the request omits tickers
+- Identifier resolution → call `/api/v2/companies` only for EDGAR runs or when metadata persistence is requested
+- Metadata persistence → write per-ticker source artifacts + one manifest only for `--metadata-only` or `--metadata-mode source`
 - EDGAR submissions → per ticker raw SEC submissions uploaded under `source/edgar/` when `--edgar-source/--edgar-only`
 - Fundamentals path: raw → prod unless `--fundamentals-mode none` or `--edgar-only`
 - Market daily path: raw → prod unless `--intraday-mode none` or `--edgar-only`
@@ -353,7 +369,9 @@ Functions.
 ## Activities
 
 - `check_marketio_health`: Ensure the Marketio API is reachable.
-- `fetch_companies_metadata`: Pull company metadata from `/api/v2/companies` and upload the consolidated model file.
+- `load_active_universe_index`: Read `prod/models/{universe_key}/active.json` for ticker expansion and active-universe RICs.
+- `resolve_company_identifiers`: Pull company metadata from `/api/v2/companies` and return compact CIK/RIC routing data.
+- `persist_company_metadata`: Upload normalized per-ticker metadata artifacts and a run manifest under `source/metadata/`.
 - `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under `source/edgar/`.
 - `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw` and `/api/v2/fundamentals/production`.
 - `fetch_intraday_raw` / `fetch_intraday_prod`: Pull market daily data from `/api/v2/market/daily/raw` and `/api/v2/market/daily/production`, while preserving the existing `intraday` storage layout.

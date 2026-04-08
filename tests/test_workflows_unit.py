@@ -45,6 +45,19 @@ def test_validate_request_rejects_non_daily_intraday_frequency() -> None:
     assert exc_info.value.non_retryable is True
 
 
+def test_validate_request_rejects_unknown_metadata_mode() -> None:
+    request = MarketDataRequest(
+        universe_key="mmh5r1",
+        tickers=["AA"],
+        start_date="2024-01-01",
+        end_date="2024-01-31",
+        metadata_mode="full",
+    )
+    with pytest.raises(ApplicationError, match="Unsupported metadata_mode") as exc_info:
+        _validate_request(request)
+    assert exc_info.value.non_retryable is True
+
+
 def test_validate_request_rejects_removed_fundamentals_stage_mode() -> None:
     request = MarketDataRequest(
         universe_key="mmh5r1",

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 DEFAULT_INTRADAY_FREQUENCY = "daily"
 DEFAULT_FUNDAMENTALS_MODE = "prod"
 DEFAULT_INTRADAY_MODE = "prod"
+DEFAULT_METADATA_MODE = "none"
 DEFAULT_MAX_CONCURRENT_TICKERS = 5
 
 
@@ -26,6 +27,7 @@ class MarketDataRequest:
     intraday_frequency: str = DEFAULT_INTRADAY_FREQUENCY
     fundamentals_mode: str = DEFAULT_FUNDAMENTALS_MODE
     intraday_mode: str = DEFAULT_INTRADAY_MODE
+    metadata_mode: str = DEFAULT_METADATA_MODE
     edgar_source: bool = False
     metadata_only: bool = False
     edgar_only: bool = False
@@ -34,6 +36,10 @@ class MarketDataRequest:
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "MarketDataRequest":
+        metadata_only = bool(payload.get("metadata_only", False))
+        metadata_mode = str(payload.get("metadata_mode") or DEFAULT_METADATA_MODE).strip().lower()
+        if metadata_only:
+            metadata_mode = "source"
         return cls(
             universe_key=str(payload["universe_key"]).strip().lower(),
             tickers=[str(ticker).strip().upper() for ticker in payload.get("tickers", []) if str(ticker).strip()],
@@ -42,8 +48,9 @@ class MarketDataRequest:
             intraday_frequency=normalize_intraday_frequency(payload.get("intraday_frequency")),
             fundamentals_mode=str(payload.get("fundamentals_mode") or DEFAULT_FUNDAMENTALS_MODE).strip().lower(),
             intraday_mode=str(payload.get("intraday_mode") or DEFAULT_INTRADAY_MODE).strip().lower(),
+            metadata_mode=metadata_mode,
             edgar_source=bool(payload.get("edgar_source", False)),
-            metadata_only=bool(payload.get("metadata_only", False)),
+            metadata_only=metadata_only,
             edgar_only=bool(payload.get("edgar_only", False)),
             request_id=_optional_str(payload.get("request_id")),
             max_concurrent_tickers=max(1, int(payload.get("max_concurrent_tickers") or DEFAULT_MAX_CONCURRENT_TICKERS)),

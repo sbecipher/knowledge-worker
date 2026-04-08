@@ -17,6 +17,9 @@ from activities import (
     fetch_fundamentals_stage,
     fetch_intraday_prod,
     fetch_intraday_raw,
+    load_active_universe_index,
+    persist_company_metadata,
+    resolve_company_identifiers,
 )
 from config import load_settings
 from workflows import MarketDataWorkflow
@@ -73,6 +76,9 @@ async def main() -> None:
         workflows=[MarketDataWorkflow],
         activities=[
             check_marketio_health,
+            load_active_universe_index,
+            resolve_company_identifiers,
+            persist_company_metadata,
             fetch_companies_metadata,
             fetch_edgar_source,
             fetch_fundamentals_raw,

@@ -42,43 +42,26 @@ def test_load_artifact_payload_uses_durable_gcs_reference(monkeypatch: pytest.Mo
     assert payload == [{"ticker": "AA", "value": 1}]
 
 
-def test_fetch_companies_metadata_uses_current_route_and_builds_cik_and_ric_maps(
+def test_load_active_universe_index_uses_active_universe_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured_calls: List[tuple[str, Dict[str, Any]]] = []
-
-    def fake_post(endpoint: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        captured_calls.append((endpoint, payload))
-        return [
-            {
-                "ticker": "AA",
-                "cik_number": "0001675149",
-                "primary_ric": "AA.N",
-                "ric": "AA",
-            }
-        ]
-
-    monkeypatch.setattr(activities, "_post_json", fake_post)
     monkeypatch.setattr(
         activities.UPLOADER,
         "download_json",
-        lambda object_path: [{"ticker": "AA", "ric": "AA", "name": "Alcoa"}],
+        lambda object_path: [{"ticker": "AA", "ric": "AA"}, {"ticker": "NUE", "primary_ric": "NUE.N"}],
     )
 
-    result = activities.fetch_companies_metadata(
-        tickers=["AA"],
+    result = activities.load_active_universe_index(
         universe_key="mmh5r1",
         execution=_execution_payload(),
     )
 
-    assert captured_calls == [(activities.MARKETIO_ROUTE_COMPANIES, {"tickers": ["AA"]})]
-    assert result["ciks"] == {"AA": "0001675149"}
-    assert result["rics"] == {"AA": "AA.N"}
-    assert result["object_path"] == "prod/models/mmh5r1/metadata/req-123.json"
     assert result["active_source_object_path"] == "prod/models/mmh5r1/active.json"
+    assert result["tickers"] == ["AA", "NUE"]
+    assert result["rics"] == {"AA": "AA", "NUE": "NUE.N"}
 
 
-def test_fetch_companies_metadata_uses_active_universe_when_tickers_omitted(
+def test_resolve_company_identifiers_normalizes_metadata_and_returns_cik_ric_maps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_calls: List[tuple[str, Dict[str, Any]]] = []
@@ -91,16 +74,100 @@ def test_fetch_companies_metadata_uses_active_universe_when_tickers_omitted(
     monkeypatch.setattr(
         activities.UPLOADER,
         "download_json",
-        lambda object_path: [{"ticker": "AA"}, {"ticker": "NUE"}],
+        lambda object_path: [{"ticker": "AA", "ric": "AA"}],
     )
 
-    result = activities.fetch_companies_metadata(universe_key="mmh5r1", execution=_execution_payload())
+    result = activities.resolve_company_identifiers(
+        tickers=["AA"],
+        universe_key="mmh5r1",
+        include_metadata_rows=True,
+        execution=_execution_payload(),
+    )
 
     assert captured_calls == [
-        (activities.MARKETIO_ROUTE_COMPANIES, {"tickers": ["AA", "NUE"]})
+        (activities.MARKETIO_ROUTE_COMPANIES, {"tickers": ["AA"]})
     ]
-    assert result["tickers"] == ["AA", "NUE"]
+    assert result["tickers"] == ["AA"]
     assert result["ciks"] == {"AA": "0001675149"}
+    assert result["rics"] == {"AA": "AA.N"}
+    row = result["rows_by_ticker"]["AA"]
+    assert row["ticker"] == "AA"
+    assert row["universe_key"] == "mmh5r1"
+    assert row["sic_code"] is None
+    assert row["raw"]["active_universe_row"]["ticker"] == "AA"
+
+
+def test_resolve_company_identifiers_can_skip_metadata_rows_when_not_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        activities.UPLOADER,
+        "download_json",
+        lambda object_path: [{"ticker": "AA", "ric": "AA"}],
+    )
+    monkeypatch.setattr(
+        activities,
+        "_post_json",
+        lambda endpoint, payload: [{"ticker": "AA", "cik_number": "0001675149", "primary_ric": "AA.N"}],
+    )
+
+    result = activities.resolve_company_identifiers(
+        tickers=["AA"],
+        universe_key="mmh5r1",
+        include_metadata_rows=False,
+        execution=_execution_payload(),
+    )
+
+    assert result["ciks"] == {"AA": "0001675149"}
+    assert result["rows_by_ticker"] == {}
+
+
+def test_persist_company_metadata_writes_per_ticker_artifacts_and_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uploaded_paths: List[str] = []
+
+    def fake_upload(local_path, object_path, metadata=None):
+        uploaded_paths.append(object_path)
+        return f"gs://bucket/{object_path}"
+
+    monkeypatch.setattr(activities.UPLOADER, "upload_file", fake_upload)
+
+    result = activities.persist_company_metadata(
+        {
+            "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
+            "active_source_object_path": "prod/models/mmh5r1/active.json",
+            "tickers": ["AA"],
+            "ciks": {"AA": "0001675149"},
+            "rics": {"AA": "AA.N"},
+            "rows_by_ticker": {
+                "AA": {
+                    "ticker": "AA",
+                    "universe_key": "mmh5r1",
+                    "organization_id": "5051045063",
+                    "cik_number": "0001675149",
+                    "ric": "AA",
+                    "primary_ric": "AA.N",
+                    "provider": "lseg",
+                    "source": "marketio",
+                    "raw": {"active_universe_row": {"ticker": "AA"}},
+                }
+            },
+            "missing_from_active": [],
+            "missing_from_provider": [],
+            "universe_key": "mmh5r1",
+        },
+        universe_key="mmh5r1",
+        execution=_execution_payload(),
+    )
+
+    assert result["persisted_tickers"] == ["AA"]
+    assert result["artifacts_by_ticker"]["AA"][0]["object_path"] == "source/metadata/AA/AA_wf-123.json"
+    assert result["manifest_object_path"] == "source/metadata/manifests/wf-123.json"
+    assert uploaded_paths == [
+        "source/metadata/AA/AA_wf-123.json",
+        "source/metadata/manifests/wf-123.json",
+    ]
 
 
 def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -63,22 +63,42 @@ async def _run_workflow(
             activity_executor.shutdown(wait=True)
 
 
-def test_metadata_only_workflow() -> None:
+def test_metadata_only_workflow_persists_metadata_only() -> None:
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
 
-    @activity.defn(name="fetch_companies_metadata")
-    def fetch_companies_metadata(
+    @activity.defn(name="resolve_company_identifiers")
+    def resolve_company_identifiers(
         tickers: List[str],
+        universe_key: str,
+        include_metadata_rows: bool,
+        execution: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        assert tickers == ["AA"]
+        assert include_metadata_rows is True
+        return {
+            "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
+            "active_source_object_path": "prod/models/mmh5r1/active.json",
+            "tickers": ["AA"],
+            "ciks": {"AA": "0000123456"},
+            "rics": {"AA": "AA.N"},
+            "rows_by_ticker": {"AA": {"ticker": "AA"}},
+            "missing_from_active": [],
+            "missing_from_provider": [],
+        }
+
+    @activity.defn(name="persist_company_metadata")
+    def persist_company_metadata(
+        identifier_resolution: Dict[str, Any],
         universe_key: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
-            "ciks": {ticker: "0000123456" for ticker in tickers},
-            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
-            "record_count": len(tickers),
-            "tickers": tickers,
+            "manifest_uri": "gs://bucket/source/metadata/manifests/wf-123.json",
+            "manifest_object_path": "source/metadata/manifests/wf-123.json",
+            "persisted_tickers": ["AA"],
+            "artifacts_by_ticker": {"AA": [_artifact_ref("AA", "metadata", "source")]},
         }
 
     result = asyncio.run(
@@ -91,30 +111,40 @@ def test_metadata_only_workflow() -> None:
                 "metadata_only": True,
                 "request_id": "req-metadata",
             },
-            [check_marketio_health, fetch_companies_metadata],
+            [check_marketio_health, resolve_company_identifiers, persist_company_metadata],
         )
     )
+
     assert result["request_id"] == "req-metadata"
-    assert result["metadata"][0]["record_count"] == 1
-    assert "AA" not in result
+    assert result["metadata"]["manifest_object_path"] == "source/metadata/manifests/wf-123.json"
+    assert result["AA"]["metadata_source"][0]["dataset"] == "metadata"
+    assert result["AA"]["intraday_raw"] == []
 
 
-def test_edgar_only_workflow() -> None:
+def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() -> None:
+    captured: Dict[str, Any] = {}
+
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
 
-    @activity.defn(name="fetch_companies_metadata")
-    def fetch_companies_metadata(
+    @activity.defn(name="resolve_company_identifiers")
+    def resolve_company_identifiers(
         tickers: List[str],
         universe_key: str,
+        include_metadata_rows: bool,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
+        assert include_metadata_rows is False
         return {
-            "ciks": {ticker: "0000123456" for ticker in tickers},
-            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
-            "record_count": len(tickers),
-            "tickers": tickers,
+            "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
+            "active_source_object_path": "prod/models/mmh5r1/active.json",
+            "tickers": ["AA"],
+            "ciks": {"AA": "0000123456"},
+            "rics": {"AA": "AA.N"},
+            "rows_by_ticker": {},
+            "missing_from_active": [],
+            "missing_from_provider": [],
         }
 
     @activity.defn(name="fetch_edgar_source")
@@ -124,8 +154,9 @@ def test_edgar_only_workflow() -> None:
         universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
-        ticker = tickers[0] if tickers else "AA"
-        return [_artifact_ref(ticker, "edgar", "source")]
+        captured["tickers"] = tickers
+        captured["ciks"] = ciks
+        return [_artifact_ref("AA", "edgar", "source")]
 
     result = asyncio.run(
         _run_workflow(
@@ -137,53 +168,23 @@ def test_edgar_only_workflow() -> None:
                 "edgar_only": True,
                 "request_id": "req-edgar",
             },
-            [check_marketio_health, fetch_companies_metadata, fetch_edgar_source],
+            [check_marketio_health, resolve_company_identifiers, fetch_edgar_source],
         )
     )
+
+    assert "metadata" not in result
+    assert captured["tickers"] is None
+    assert captured["ciks"] == ["0000123456"]
+    assert result["identifiers"]["ciks"] == {"AA": "0000123456"}
     assert result["AA"]["edgar_source"][0]["dataset"] == "edgar"
-    assert result["AA"]["fundamentals_raw"] == []
-    assert result["AA"]["intraday_raw"] == []
 
 
-def test_full_pipeline_workflow() -> None:
+def test_intraday_only_explicit_ticker_skips_identifier_resolution() -> None:
+    captured: Dict[str, Any] = {}
+
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
-
-    @activity.defn(name="fetch_companies_metadata")
-    def fetch_companies_metadata(
-        tickers: List[str],
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        return {
-            "ciks": {ticker: "0000123456" for ticker in tickers},
-            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
-            "record_count": len(tickers),
-            "tickers": tickers,
-        }
-
-    @activity.defn(name="fetch_fundamentals_raw")
-    def fetch_fundamentals_raw(
-        ticker: str,
-        ric: str,
-        start_date: str,
-        end_date: str,
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        ref = _artifact_ref(ticker, "fundamentals", "source")
-        ref["ric"] = ric
-        ref["primary_ric"] = ric
-        return [ref]
-
-    @activity.defn(name="fetch_fundamentals_prod")
-    def fetch_fundamentals_prod(
-        raw_artifacts: List[Dict[str, Any]],
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        return [_artifact_ref(raw_artifacts[0]["ticker"], "fundamentals", "prod")]
 
     @activity.defn(name="fetch_intraday_raw")
     def fetch_intraday_raw(
@@ -195,145 +196,10 @@ def test_full_pipeline_workflow() -> None:
         universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
+        captured["ticker"] = ticker
+        captured["ric"] = ric
         ref = _artifact_ref(ticker, "intraday", "source")
         ref["ric"] = ric
-        ref["primary_ric"] = ric
-        return [ref]
-
-    @activity.defn(name="fetch_intraday_prod")
-    def fetch_intraday_prod(
-        raw_artifacts: List[Dict[str, Any]],
-        frequency: str,
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        return [_artifact_ref(raw_artifacts[0]["ticker"], "intraday", "prod")]
-
-    result = asyncio.run(
-        _run_workflow(
-            {
-                "universe_key": "mmh5r1",
-                "tickers": ["AA"],
-                "start_date": "2024-01-01",
-                "end_date": "2024-01-31",
-                "request_id": "req-full",
-            },
-            [
-                check_marketio_health,
-                fetch_companies_metadata,
-                fetch_fundamentals_raw,
-                fetch_fundamentals_prod,
-                fetch_intraday_raw,
-                fetch_intraday_prod,
-            ],
-        )
-    )
-    assert result["AA"]["fundamentals_prod"][0]["layer"] == "prod"
-    assert result["AA"]["fundamentals_stage"] == []
-    assert result["AA"]["intraday_prod"][0]["dataset"] == "intraday"
-
-
-def test_partial_failure_isolated_per_ticker() -> None:
-    @activity.defn(name="check_marketio_health")
-    def check_marketio_health(execution: Dict[str, Any]) -> None:
-        return None
-
-    @activity.defn(name="fetch_companies_metadata")
-    def fetch_companies_metadata(
-        tickers: List[str],
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        return {
-            "ciks": {ticker: "0000123456" for ticker in tickers},
-            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
-            "record_count": len(tickers),
-            "tickers": tickers,
-        }
-
-    @activity.defn(name="fetch_fundamentals_raw")
-    def fetch_fundamentals_raw(
-        ticker: str,
-        ric: str,
-        start_date: str,
-        end_date: str,
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        if ticker == "NUE":
-            raise ApplicationError("invalid upstream data", non_retryable=True)
-        ref = _artifact_ref(ticker, "fundamentals", "source")
-        ref["ric"] = ric
-        ref["primary_ric"] = ric
-        return [ref]
-
-    @activity.defn(name="fetch_intraday_raw")
-    def fetch_intraday_raw(
-        ticker: str,
-        ric: str,
-        start_date: str,
-        end_date: str,
-        frequency: str,
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        ref = _artifact_ref(ticker, "intraday", "source")
-        ref["ric"] = ric
-        ref["primary_ric"] = ric
-        return [ref]
-
-    result = asyncio.run(
-        _run_workflow(
-            {
-                "universe_key": "mmh5r1",
-                "tickers": ["AA", "NUE"],
-                "start_date": "2024-01-01",
-                "end_date": "2024-01-31",
-                "fundamentals_mode": "raw",
-                "intraday_mode": "raw",
-                "request_id": "req-partial",
-            },
-            [check_marketio_health, fetch_companies_metadata, fetch_fundamentals_raw, fetch_intraday_raw],
-        )
-    )
-    assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
-    assert result["NUE"][0]["type"] == "ApplicationError"
-
-
-def test_eod_frequency_is_normalized_before_intraday_activity() -> None:
-    captured: Dict[str, str] = {}
-
-    @activity.defn(name="check_marketio_health")
-    def check_marketio_health(execution: Dict[str, Any]) -> None:
-        return None
-
-    @activity.defn(name="fetch_companies_metadata")
-    def fetch_companies_metadata(
-        tickers: List[str],
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        return {
-            "ciks": {ticker: "0000123456" for ticker in tickers},
-            "rics": {ticker: f"{ticker}.N" for ticker in tickers},
-            "record_count": len(tickers),
-            "tickers": tickers,
-        }
-
-    @activity.defn(name="fetch_intraday_raw")
-    def fetch_intraday_raw(
-        ticker: str,
-        ric: str,
-        start_date: str,
-        end_date: str,
-        frequency: str,
-        universe_key: str,
-        execution: Dict[str, Any],
-    ) -> List[Dict[str, Any]]:
-        captured["frequency"] = frequency
-        ref = _artifact_ref(ticker, "intraday", "source")
-        ref["ric"] = ric
-        ref["primary_ric"] = ric
         return [ref]
 
     result = asyncio.run(
@@ -345,36 +211,37 @@ def test_eod_frequency_is_normalized_before_intraday_activity() -> None:
                 "end_date": "2024-01-31",
                 "fundamentals_mode": "none",
                 "intraday_mode": "raw",
-                "intraday_frequency": "eod",
-                "request_id": "req-eod",
+                "request_id": "req-intraday-only",
             },
-            [check_marketio_health, fetch_companies_metadata, fetch_intraday_raw],
+            [check_marketio_health, fetch_intraday_raw],
         )
     )
 
-    assert captured["frequency"] == "daily"
+    assert captured["ticker"] == "AA"
+    assert captured["ric"] is None
     assert result["AA"]["intraday_raw"][0]["ticker"] == "AA"
+    assert result["identifiers"]["ciks"] == {}
 
 
-def test_downstream_processing_uses_metadata_tickers_when_request_omits_tickers() -> None:
-    captured: Dict[str, str] = {}
+def test_full_universe_non_edgar_uses_active_universe_index() -> None:
+    captured: Dict[str, Any] = {}
 
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
 
-    @activity.defn(name="fetch_companies_metadata")
-    def fetch_companies_metadata(
-        tickers: List[str],
+    @activity.defn(name="load_active_universe_index")
+    def load_active_universe_index(
         universe_key: str,
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
-        assert tickers == []
         return {
-            "ciks": {"AA": "0000123456"},
+            "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
+            "active_source_object_path": "prod/models/mmh5r1/active.json",
+            "tickers": ["AA"],
             "rics": {"AA": "AA.N"},
             "record_count": 1,
-            "tickers": ["AA"],
+            "universe_key": universe_key,
         }
 
     @activity.defn(name="fetch_fundamentals_raw")
@@ -387,6 +254,7 @@ def test_downstream_processing_uses_metadata_tickers_when_request_omits_tickers(
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         captured["ticker"] = ticker
+        captured["ric"] = ric
         ref = _artifact_ref(ticker, "fundamentals", "source")
         ref["ric"] = ric
         ref["primary_ric"] = ric
@@ -403,9 +271,128 @@ def test_downstream_processing_uses_metadata_tickers_when_request_omits_tickers(
                 "intraday_mode": "none",
                 "request_id": "req-full-universe",
             },
-            [check_marketio_health, fetch_companies_metadata, fetch_fundamentals_raw],
+            [check_marketio_health, load_active_universe_index, fetch_fundamentals_raw],
         )
     )
 
     assert captured["ticker"] == "AA"
+    assert captured["ric"] == "AA.N"
+    assert result["identifiers"]["active_source_object_path"] == "prod/models/mmh5r1/active.json"
     assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
+
+
+def test_combined_metadata_source_and_intraday_reuses_identifier_resolution() -> None:
+    captured: Dict[str, Any] = {}
+
+    @activity.defn(name="check_marketio_health")
+    def check_marketio_health(execution: Dict[str, Any]) -> None:
+        return None
+
+    @activity.defn(name="resolve_company_identifiers")
+    def resolve_company_identifiers(
+        tickers: List[str],
+        universe_key: str,
+        include_metadata_rows: bool,
+        execution: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        captured["include_metadata_rows"] = include_metadata_rows
+        return {
+            "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
+            "active_source_object_path": "prod/models/mmh5r1/active.json",
+            "tickers": ["AA"],
+            "ciks": {"AA": "0000123456"},
+            "rics": {"AA": "AA.N"},
+            "rows_by_ticker": {"AA": {"ticker": "AA", "primary_ric": "AA.N"}},
+            "missing_from_active": [],
+            "missing_from_provider": [],
+        }
+
+    @activity.defn(name="persist_company_metadata")
+    def persist_company_metadata(
+        identifier_resolution: Dict[str, Any],
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "manifest_uri": "gs://bucket/source/metadata/manifests/wf-123.json",
+            "manifest_object_path": "source/metadata/manifests/wf-123.json",
+            "persisted_tickers": ["AA"],
+            "artifacts_by_ticker": {"AA": [_artifact_ref("AA", "metadata", "source")]},
+        }
+
+    @activity.defn(name="fetch_intraday_raw")
+    def fetch_intraday_raw(
+        ticker: str,
+        ric: str,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        captured["ric"] = ric
+        ref = _artifact_ref(ticker, "intraday", "source")
+        ref["ric"] = ric
+        ref["primary_ric"] = ric
+        return [ref]
+
+    result = asyncio.run(
+        _run_workflow(
+            {
+                "universe_key": "mmh5r1",
+                "tickers": ["AA"],
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "fundamentals_mode": "none",
+                "intraday_mode": "raw",
+                "metadata_mode": "source",
+                "request_id": "req-combined",
+            },
+            [check_marketio_health, resolve_company_identifiers, persist_company_metadata, fetch_intraday_raw],
+        )
+    )
+
+    assert captured["include_metadata_rows"] is True
+    assert captured["ric"] == "AA.N"
+    assert result["metadata"]["persisted_tickers"] == ["AA"]
+    assert result["AA"]["metadata_source"][0]["dataset"] == "metadata"
+    assert result["AA"]["intraday_raw"][0]["ric"] == "AA.N"
+
+
+def test_partial_failure_isolated_per_ticker() -> None:
+    @activity.defn(name="check_marketio_health")
+    def check_marketio_health(execution: Dict[str, Any]) -> None:
+        return None
+
+    @activity.defn(name="fetch_fundamentals_raw")
+    def fetch_fundamentals_raw(
+        ticker: str,
+        ric: str,
+        start_date: str,
+        end_date: str,
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        if ticker == "NUE":
+            raise ApplicationError("invalid upstream data", non_retryable=True)
+        ref = _artifact_ref(ticker, "fundamentals", "source")
+        return [ref]
+
+    result = asyncio.run(
+        _run_workflow(
+            {
+                "universe_key": "mmh5r1",
+                "tickers": ["AA", "NUE"],
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "fundamentals_mode": "raw",
+                "intraday_mode": "none",
+                "request_id": "req-partial",
+            },
+            [check_marketio_health, fetch_fundamentals_raw],
+        )
+    )
+
+    assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
+    assert result["NUE"]["error"]["type"] == "ApplicationError"
+    assert result["NUE"]["fundamentals_raw"] == []

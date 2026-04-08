@@ -155,6 +155,14 @@ def build_active_universe_object_path(universe_key: str, prefix: str = "") -> st
     return str(PurePosixPath(*parts))
 
 
+def build_metadata_manifest_object_path(workflow_id: str, prefix: str = "") -> str:
+    if not workflow_id:
+        raise ValueError("workflow_id required for metadata manifest path")
+    parts = [p for p in [prefix, "source", "metadata", "manifests"] if p]
+    parts.append(f"{sanitize_path_segment(workflow_id)}.json")
+    return str(PurePosixPath(*parts))
+
+
 class GCSUploader:
     """
     Thin wrapper around google-cloud-storage with optional dry-run.

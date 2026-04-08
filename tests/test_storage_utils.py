@@ -1,5 +1,9 @@
 from models import ArtifactRef
-from storage_utils import build_active_universe_object_path, build_object_path
+from storage_utils import (
+    build_active_universe_object_path,
+    build_metadata_manifest_object_path,
+    build_object_path,
+)
 
 
 def test_models_snapshot_path_uses_request_suffix() -> None:
@@ -14,6 +18,21 @@ def test_models_snapshot_path_uses_request_suffix() -> None:
 
 def test_active_universe_path_uses_universe_key() -> None:
     assert build_active_universe_object_path("mmh5r1") == "prod/models/mmh5r1/active.json"
+
+
+def test_metadata_source_path_uses_ticker_and_workflow_id() -> None:
+    path = build_object_path(
+        layer="source",
+        dataset="metadata",
+        universe_key="mmh5r1",
+        ticker="AA",
+        suffix="wf-123",
+    )
+    assert path == "source/metadata/AA/AA_wf-123.json"
+
+
+def test_metadata_manifest_path_uses_workflow_id() -> None:
+    assert build_metadata_manifest_object_path("wf-123") == "source/metadata/manifests/wf-123.json"
 
 
 def test_artifact_ref_round_trip_payload() -> None:

@@ -18,6 +18,7 @@ from models import ArtifactRef, ExecutionMetadata
 from storage_utils import (
     GCSUploader,
     build_active_universe_object_path,
+    build_metadata_manifest_object_path,
     build_object_path,
     ensure_dir,
     format_date,
@@ -188,6 +189,164 @@ def _load_active_universe_rows(universe_key: str) -> tuple[str, List[Dict[str, A
         )
     rows = [dict(item) for item in payload if isinstance(item, dict)]
     return object_path, rows
+
+
+def _active_universe_index_payload(universe_key: str) -> Dict[str, Any]:
+    object_path, rows = _load_active_universe_rows(universe_key)
+    tickers: List[str] = []
+    rics: Dict[str, str] = {}
+    rows_by_ticker: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker or ticker in rows_by_ticker:
+            continue
+        rows_by_ticker[ticker] = dict(row)
+        tickers.append(ticker)
+        ric = _preferred_ric(row.get("primary_ric") or row.get("ric"))
+        if ric:
+            rics[ticker] = ric
+    return {
+        "active_source_uri": _object_uri(object_path),
+        "active_source_object_path": object_path,
+        "tickers": tickers,
+        "rics": rics,
+        "rows_by_ticker": rows_by_ticker,
+        "record_count": len(tickers),
+    }
+
+
+def _optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    return None
+
+
+def _optional_bool(value: Any) -> Optional[bool]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y", "on"}:
+        return True
+    if text in {"false", "0", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            continue
+        return value
+    return None
+
+
+def _clean_dict_none_values(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in payload.items() if value is not None}
+
+
+def _normalize_company_metadata_row(
+    ticker: str,
+    universe_key: str,
+    active_row: Optional[Dict[str, Any]],
+    provider_row: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    active_payload = dict(active_row or {})
+    provider_payload = dict(provider_row or {})
+    merged = {**active_payload, **provider_payload}
+
+    canonical = {
+        "ticker": ticker,
+        "universe_key": universe_key,
+        "organization_id": _optional_str(_first_non_empty(merged.get("organization_id"), merged.get("perm_id"))),
+        "perm_id": _optional_str(_first_non_empty(merged.get("perm_id"), merged.get("organization_id"))),
+        "cik_number": _optional_str(_first_non_empty(merged.get("cik_number"), merged.get("cik"))),
+        "lei": _optional_str(merged.get("lei")),
+        "issuer_oa_perm_id": _optional_str(merged.get("issuer_oa_perm_id")),
+        "isin": _optional_str(_first_non_empty(merged.get("issue_isin"), merged.get("isin"))),
+        "sedol": _optional_str(_first_non_empty(merged.get("sedol"), merged.get("sedol_code"))),
+        "ric": _optional_str(_preferred_ric(merged.get("ric"))),
+        "primary_ric": _optional_str(_preferred_ric(_first_non_empty(merged.get("primary_ric"), merged.get("ric")))),
+        "organization_name": _optional_str(merged.get("organization_name")),
+        "company_name": _optional_str(_first_non_empty(merged.get("company_name"), merged.get("organization_name"))),
+        "common_name": _optional_str(_first_non_empty(merged.get("common_name"), merged.get("company_name"))),
+        "document_title": _optional_str(merged.get("document_title")),
+        "instrument_type": _optional_str(merged.get("instrument_type")),
+        "asset_category": _optional_str(merged.get("asset_category")),
+        "asset_category_code": _optional_str(merged.get("asset_category_code")),
+        "is_public": _optional_bool(merged.get("is_public")),
+        "instrument_is_active": _optional_bool(merged.get("instrument_is_active")),
+        "is_primary_quote": _optional_bool(merged.get("is_primary_quote")),
+        "exchange": _optional_str(merged.get("exchange")),
+        "exchange_code": _optional_str(merged.get("exchange_code")),
+        "exchange_country": _optional_str(merged.get("exchange_country")),
+        "hq_city": _optional_str(merged.get("hq_city")),
+        "hq_state": _optional_str(merged.get("hq_state")),
+        "hq_country": _optional_str(merged.get("hq_country")),
+        "country_code": _optional_str(merged.get("country_code")),
+        "sic_code": _optional_str(_first_non_empty(merged.get("sic_code"), merged.get("sic"))),
+        "sic_description": _optional_str(merged.get("sic_description")),
+        "sector": _optional_str(merged.get("sector")),
+        "industry_group": _optional_str(merged.get("industry_group")),
+        "trbc_economic_sector": _optional_str(merged.get("trbc_economic_sector")),
+        "trbc_business_sector": _optional_str(merged.get("trbc_business_sector")),
+        "trbc_industry_group": _optional_str(merged.get("trbc_industry_group")),
+        "trbc_industry": _optional_str(merged.get("trbc_industry")),
+        "trbc_activity": _optional_str(merged.get("trbc_activity")),
+        "trbc_economic_sector_code": _optional_str(merged.get("trbc_economic_sector_code")),
+        "trbc_business_sector_code": _optional_str(merged.get("trbc_business_sector_code")),
+        "trbc_industry_group_code": _optional_str(merged.get("trbc_industry_group_code")),
+        "trbc_industry_code": _optional_str(merged.get("trbc_industry_code")),
+        "trbc_activity_code": _optional_str(merged.get("trbc_activity_code")),
+        "has_fundamental_coverage": _optional_bool(merged.get("has_fundamental_coverage")),
+        "has_esg_coverage": _optional_bool(merged.get("has_esg_coverage")),
+        "primary_listing_fundamentals_exist": _optional_bool(merged.get("primary_listing_fundamentals_exist")),
+        "company_report_currency": _optional_str(merged.get("company_report_currency")),
+        "website": _optional_str(merged.get("website")),
+        "phone_number": _optional_str(merged.get("phone_number")),
+        "employees": _optional_int(merged.get("employees")),
+        "business_description": _optional_str(merged.get("business_description")),
+        "financial_summary": _optional_str(
+            _first_non_empty(merged.get("financial_summary"), merged.get("company_financial_summary"))
+        ),
+        "provider": _optional_str(merged.get("provider"))
+        or ("lseg" if isinstance(provider_payload.get("lseg_metadata"), dict) else "marketio"),
+        "source": _optional_str(merged.get("source")) or "marketio",
+    }
+
+    canonical["raw"] = _clean_dict_none_values(
+        {
+            "active_universe_row": active_payload or None,
+            "provider_row": provider_payload or None,
+            "lseg_metadata": provider_payload.get("lseg_metadata")
+            if isinstance(provider_payload.get("lseg_metadata"), dict)
+            else None,
+        }
+    )
+    return canonical
 
 
 def _jwt_exp(token: str) -> Optional[int]:
@@ -569,100 +728,244 @@ def check_marketio_health(execution: Dict[str, Any]) -> None:
     _activity_heartbeat({"status": "healthy"})
 
 
-@activity.defn(name="fetch_companies_metadata")
-def fetch_companies_metadata(
-    tickers: Optional[List[str]] = None,
+@activity.defn(name="load_active_universe_index")
+def load_active_universe_index(
     universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if _activity_is_cancelled():
-        raise RuntimeError("fetch_companies_metadata cancelled")
+        raise RuntimeError("load_active_universe_index cancelled")
     execution_meta = _execution_metadata_from_payload(execution)
     resolved_universe_key = _resolve_universe_key(universe_key)
-    active_object_path, active_rows = _load_active_universe_rows(resolved_universe_key)
-    active_rows_by_ticker = {
-        str(row.get("ticker") or "").strip().upper(): dict(row)
-        for row in active_rows
-        if str(row.get("ticker") or "").strip()
+    index = _active_universe_index_payload(resolved_universe_key)
+    logger.info(
+        "%s active_universe_loaded active_object_path=%s record_count=%s",
+        _log_prefix(execution_meta, "active_universe"),
+        index["active_source_object_path"],
+        index["record_count"],
+    )
+    _activity_heartbeat({"count": index["record_count"]})
+    return {
+        "active_source_uri": index["active_source_uri"],
+        "active_source_object_path": index["active_source_object_path"],
+        "tickers": index["tickers"],
+        "rics": index["rics"],
+        "record_count": index["record_count"],
+        "universe_key": resolved_universe_key,
     }
+
+
+@activity.defn(name="resolve_company_identifiers")
+def resolve_company_identifiers(
+    tickers: Optional[List[str]] = None,
+    universe_key: Optional[str] = None,
+    include_metadata_rows: bool = False,
+    execution: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if _activity_is_cancelled():
+        raise RuntimeError("resolve_company_identifiers cancelled")
+    execution_meta = _execution_metadata_from_payload(execution)
+    resolved_universe_key = _resolve_universe_key(universe_key)
+    active_index = _active_universe_index_payload(resolved_universe_key)
+    active_rows_by_ticker = active_index["rows_by_ticker"]
+
     requested_tickers = _normalized_ticker_list(tickers)
     if not requested_tickers:
-        requested_tickers = list(active_rows_by_ticker)
+        requested_tickers = list(active_index["tickers"])
     if not requested_tickers:
         raise _non_retryable(
             f"No tickers available for universe_key={resolved_universe_key}",
             type_name="ArtifactValidationError",
         )
 
-    payload: Dict[str, Any] = {"tickers": requested_tickers}
-    data = _post_json(MARKETIO_ROUTE_COMPANIES, payload)
+    data = _post_json(MARKETIO_ROUTE_COMPANIES, {"tickers": requested_tickers})
     if isinstance(data, list):
         metadata_rows = [item for item in data if isinstance(item, dict)]
     elif isinstance(data, dict):
         metadata_rows = [data]
     else:
         metadata_rows = []
+
     metadata_by_ticker = {
         str(item.get("ticker") or "").strip().upper(): dict(item)
         for item in metadata_rows
         if str(item.get("ticker") or "").strip()
     }
 
-    snapshot_rows: List[Dict[str, Any]] = []
-    missing_from_universe: List[str] = []
-    missing_metadata: List[str] = []
+    missing_from_active: List[str] = []
+    missing_from_provider: List[str] = []
     cik_map: Dict[str, str] = {}
     ric_map: Dict[str, str] = {}
-    for ticker in requested_tickers:
-        base_row = dict(active_rows_by_ticker.get(ticker) or {"ticker": ticker})
-        if ticker not in active_rows_by_ticker:
-            missing_from_universe.append(ticker)
-        metadata_row = metadata_by_ticker.get(ticker)
-        if metadata_row is None:
-            missing_metadata.append(ticker)
-            merged_row = base_row
-        else:
-            merged_row = {**base_row, **metadata_row}
-        merged_row["ticker"] = ticker
-        snapshot_rows.append(merged_row)
+    rows_by_ticker: Dict[str, Dict[str, Any]] = {}
 
-        cik_value = merged_row.get("cik_number") or merged_row.get("cik")
+    for ticker in requested_tickers:
+        active_row = active_rows_by_ticker.get(ticker)
+        provider_row = metadata_by_ticker.get(ticker)
+        if active_row is None:
+            missing_from_active.append(ticker)
+        if provider_row is None:
+            missing_from_provider.append(ticker)
+
+        normalized_row = _normalize_company_metadata_row(
+            ticker=ticker,
+            universe_key=resolved_universe_key,
+            active_row=active_row,
+            provider_row=provider_row,
+        )
+        if include_metadata_rows:
+            rows_by_ticker[ticker] = normalized_row
+
+        cik_value = normalized_row.get("cik_number")
         if cik_value:
             cik_map[ticker] = str(cik_value).zfill(10)
-        ric_value = merged_row.get("primary_ric") or merged_row.get("ric")
+        ric_value = normalized_row.get("primary_ric") or normalized_row.get("ric")
         if ric_value:
             ric_map[ticker] = str(ric_value).strip().upper()
 
-    if missing_from_universe:
+    if missing_from_active:
         logger.warning(
-            "%s metadata_requested_tickers_not_in_active count=%s tickers=%s",
-            _log_prefix(execution_meta, "metadata"),
-            len(missing_from_universe),
-            missing_from_universe,
+            "%s identifiers_requested_tickers_not_in_active count=%s tickers=%s",
+            _log_prefix(execution_meta, "identifier_resolution"),
+            len(missing_from_active),
+            missing_from_active,
         )
-    if missing_metadata:
+    if missing_from_provider:
         logger.warning(
-            "%s metadata_missing_marketio_rows count=%s tickers=%s",
-            _log_prefix(execution_meta, "metadata"),
-            len(missing_metadata),
-            missing_metadata,
+            "%s identifiers_missing_provider_rows count=%s tickers=%s",
+            _log_prefix(execution_meta, "identifier_resolution"),
+            len(missing_from_provider),
+            missing_from_provider,
         )
 
-    record_count = len(snapshot_rows)
-    _activity_heartbeat({"count": record_count})
+    _activity_heartbeat({"count": len(rows_by_ticker)})
+    logger.info(
+        "%s identifiers_resolved count=%s active_object_path=%s",
+        _log_prefix(execution_meta, "identifier_resolution"),
+        len(rows_by_ticker),
+        active_index["active_source_object_path"],
+    )
+    return {
+        "active_source_uri": active_index["active_source_uri"],
+        "active_source_object_path": active_index["active_source_object_path"],
+        "tickers": requested_tickers,
+        "ciks": cik_map,
+        "rics": ric_map,
+        "rows_by_ticker": rows_by_ticker,
+        "missing_from_active": missing_from_active,
+        "missing_from_provider": missing_from_provider,
+        "request_id": execution_meta.request_id,
+        "workflow_id": execution_meta.workflow_id,
+        "workflow_run_id": execution_meta.workflow_run_id,
+        "universe_key": resolved_universe_key,
+    }
 
-    object_path = build_object_path(
-        layer="prod",
-        dataset="models",
-        universe_key=resolved_universe_key,
-        suffix=execution_meta.request_id,
+
+@activity.defn(name="persist_company_metadata")
+def persist_company_metadata(
+    identifier_resolution: Dict[str, Any],
+    universe_key: Optional[str] = None,
+    execution: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if _activity_is_cancelled():
+        raise RuntimeError("persist_company_metadata cancelled")
+    execution_meta = _execution_metadata_from_payload(execution)
+    if not isinstance(identifier_resolution, dict):
+        raise _non_retryable("Identifier resolution payload must be a dict", type_name="ArtifactValidationError")
+
+    resolved_universe_key = _resolve_universe_key(universe_key or identifier_resolution.get("universe_key"))
+    rows_by_ticker = identifier_resolution.get("rows_by_ticker")
+    if not isinstance(rows_by_ticker, dict) or not rows_by_ticker:
+        raise _non_retryable(
+            "No normalized metadata rows provided for persistence",
+            type_name="ArtifactValidationError",
+        )
+
+    artifacts_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
+    persisted_tickers: List[str] = []
+    for ticker in _normalized_ticker_list(list(rows_by_ticker.keys())):
+        row = rows_by_ticker.get(ticker)
+        if not isinstance(row, dict):
+            continue
+        object_path = build_object_path(
+            layer="source",
+            dataset="metadata",
+            universe_key=resolved_universe_key,
+            ticker=ticker,
+            suffix=execution_meta.workflow_id,
+            prefix=SETTINGS.gcs_prefix,
+        )
+        local_path = _temp_path(object_path)
+        write_json(local_path, row)
+        metadata = _metadata_base(
+            "source",
+            "metadata",
+            execution_meta,
+            ticker,
+            None,
+            None,
+            None,
+            universe_key=resolved_universe_key,
+        )
+        for key in ("provider", "source", "ric", "primary_ric", "cik_number", "organization_id"):
+            value = row.get(key)
+            if value is not None:
+                metadata[key] = str(value)
+        uri = UPLOADER.upload_file(local_path, object_path, metadata=metadata)
+        ref = ArtifactRef(
+            uri=uri,
+            object_path=object_path,
+            layer="source",
+            dataset="metadata",
+            universe_key=resolved_universe_key,
+            request_id=execution_meta.request_id,
+            workflow_id=execution_meta.workflow_id,
+            workflow_run_id=execution_meta.workflow_run_id,
+            ticker=ticker,
+            record_count=1,
+            local_path=str(local_path),
+            provider=_optional_str(row.get("provider")),
+            source=_optional_str(row.get("source")),
+            ric=_optional_str(row.get("ric")),
+            primary_ric=_optional_str(row.get("primary_ric")),
+            organization_id=_optional_str(row.get("organization_id")),
+            cik_number=_optional_str(row.get("cik_number")),
+        )
+        if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
+            local_path.unlink(missing_ok=True)
+            ref = ArtifactRef(**{**ref.to_payload(), "local_path": None})
+        artifacts_by_ticker[ticker] = [ref.to_payload()]
+        persisted_tickers.append(ticker)
+        logger.info(
+            "%s metadata_source_saved uri=%s object_path=%s",
+            _log_prefix(execution_meta, "metadata_source", ticker),
+            uri,
+            object_path,
+        )
+
+    manifest_payload = {
+        "request_id": execution_meta.request_id,
+        "workflow_id": execution_meta.workflow_id,
+        "workflow_run_id": execution_meta.workflow_run_id,
+        "universe_key": resolved_universe_key,
+        "active_source_uri": identifier_resolution.get("active_source_uri"),
+        "active_source_object_path": identifier_resolution.get("active_source_object_path"),
+        "tickers": identifier_resolution.get("tickers") or persisted_tickers,
+        "persisted_tickers": persisted_tickers,
+        "ciks": identifier_resolution.get("ciks") or {},
+        "rics": identifier_resolution.get("rics") or {},
+        "missing_from_active": identifier_resolution.get("missing_from_active") or [],
+        "missing_from_provider": identifier_resolution.get("missing_from_provider") or [],
+        "artifacts_by_ticker": artifacts_by_ticker,
+    }
+    manifest_object_path = build_metadata_manifest_object_path(
+        execution_meta.workflow_id,
         prefix=SETTINGS.gcs_prefix,
     )
-    local_path = _temp_path(object_path)
-    write_json(local_path, snapshot_rows)
-    metadata = _metadata_base(
-        "prod",
-        "models",
+    manifest_local_path = _temp_path(manifest_object_path)
+    write_json(manifest_local_path, manifest_payload)
+    manifest_metadata = _metadata_base(
+        "source",
+        "metadata_manifest",
         execution_meta,
         None,
         None,
@@ -670,34 +973,71 @@ def fetch_companies_metadata(
         None,
         universe_key=resolved_universe_key,
     )
-    uri = UPLOADER.upload_file(local_path, object_path, metadata=metadata)
-    local_path_value = str(local_path)
+    manifest_uri = UPLOADER.upload_file(manifest_local_path, manifest_object_path, metadata=manifest_metadata)
     if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
-        local_path.unlink(missing_ok=True)
-        local_path_value = None
+        manifest_local_path.unlink(missing_ok=True)
 
     logger.info(
-        "%s metadata_saved uri=%s object_path=%s active_object_path=%s record_count=%s",
-        _log_prefix(execution_meta, "metadata"),
-        uri,
-        object_path,
-        active_object_path,
-        record_count,
+        "%s metadata_manifest_saved uri=%s object_path=%s persisted_tickers=%s",
+        _log_prefix(execution_meta, "metadata_manifest"),
+        manifest_uri,
+        manifest_object_path,
+        len(persisted_tickers),
     )
+    _activity_heartbeat({"count": len(persisted_tickers)})
     return {
-        "uri": uri,
-        "object_path": object_path,
-        "active_source_uri": _object_uri(active_object_path),
-        "active_source_object_path": active_object_path,
-        "record_count": record_count,
-        "ciks": cik_map,
-        "rics": ric_map,
-        "tickers": requested_tickers,
+        "manifest_uri": manifest_uri,
+        "manifest_object_path": manifest_object_path,
+        "persisted_tickers": persisted_tickers,
+        "artifacts_by_ticker": artifacts_by_ticker,
+        "active_source_uri": identifier_resolution.get("active_source_uri"),
+        "active_source_object_path": identifier_resolution.get("active_source_object_path"),
+        "ciks": identifier_resolution.get("ciks") or {},
+        "rics": identifier_resolution.get("rics") or {},
+        "missing_from_active": identifier_resolution.get("missing_from_active") or [],
+        "missing_from_provider": identifier_resolution.get("missing_from_provider") or [],
+        "tickers": identifier_resolution.get("tickers") or persisted_tickers,
         "request_id": execution_meta.request_id,
         "workflow_id": execution_meta.workflow_id,
         "workflow_run_id": execution_meta.workflow_run_id,
         "universe_key": resolved_universe_key,
-        "local_path": local_path_value,
+    }
+
+
+@activity.defn(name="fetch_companies_metadata")
+def fetch_companies_metadata(
+    tickers: Optional[List[str]] = None,
+    universe_key: Optional[str] = None,
+    execution: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Compatibility wrapper around the decoupled metadata activities.
+    """
+    identifier_resolution = resolve_company_identifiers(
+        tickers=tickers,
+        universe_key=universe_key,
+        include_metadata_rows=True,
+        execution=execution,
+    )
+    persisted = persist_company_metadata(
+        identifier_resolution=identifier_resolution,
+        universe_key=universe_key,
+        execution=execution,
+    )
+    return {
+        "manifest_uri": persisted["manifest_uri"],
+        "manifest_object_path": persisted["manifest_object_path"],
+        "active_source_uri": persisted["active_source_uri"],
+        "active_source_object_path": persisted["active_source_object_path"],
+        "record_count": len(persisted["persisted_tickers"]),
+        "ciks": persisted["ciks"],
+        "rics": persisted["rics"],
+        "tickers": persisted["tickers"],
+        "persisted_tickers": persisted["persisted_tickers"],
+        "request_id": persisted["request_id"],
+        "workflow_id": persisted["workflow_id"],
+        "workflow_run_id": persisted["workflow_run_id"],
+        "universe_key": persisted["universe_key"],
     }
 
 
