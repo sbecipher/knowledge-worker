@@ -387,3 +387,11 @@ Functions.
 - `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under `source/edgar/`.
 - `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw`, persist partitioned NDJSON under `source/fundamentals/`, then derive partitioned `prod/fundamentals/` artifacts locally from the stored source rows with explicit lineage metadata.
 - `fetch_prices_raw` / `fetch_prices_prod`: Pull market daily raw data from `/api/v2/market/daily/raw`, resolve requested tradable windows from `period` + `as_of_date`, persist NDJSON under `source/prices/`, then derive `prod/prices/` locally from the stored source artifact with explicit lineage metadata.
+
+## Scripts
+
+- `scripts/backfill_prod_prices_from_source.py`: Rebuild `prod/prices` directly from stored `source/prices` NDJSON artifacts without calling Marketio. Output `workflow_id` is always different from the source artifact and supports four modes:
+  - `derived`: deterministic `prices_prod_<hash>` per source object
+  - `suffix`: `<source_workflow_id>__<suffix>`
+  - `run`: `<run_id>__<source_hash>`
+  - `explicit`: `<provided_base>__<source_hash>`
