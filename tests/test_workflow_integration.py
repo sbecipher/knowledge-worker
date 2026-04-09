@@ -435,3 +435,43 @@ def test_partial_failure_isolated_per_ticker() -> None:
     assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
     assert result["NUE"]["error"]["type"] == "ApplicationError"
     assert result["NUE"]["fundamentals_raw"] == []
+
+
+def test_workflow_keeps_multiple_fundamentals_refs_per_ticker() -> None:
+    @activity.defn(name="check_marketio_health")
+    def check_marketio_health(execution: Dict[str, Any]) -> None:
+        return None
+
+    @activity.defn(name="fetch_fundamentals_raw")
+    def fetch_fundamentals_raw(
+        ticker: str,
+        ric: str,
+        start_date: str,
+        end_date: str,
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        first = _artifact_ref(ticker, "fundamentals", "source")
+        first["object_path"] = "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
+        first["end_date"] = "2026-03-31"
+        second = _artifact_ref(ticker, "fundamentals", "source")
+        second["object_path"] = "source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson"
+        second["end_date"] = "2026-06-30"
+        return [first, second]
+
+    result = asyncio.run(
+        _run_workflow(
+            {
+                "universe_key": "mmh5r1",
+                "tickers": ["AA"],
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "fundamentals_mode": "raw",
+                "market_mode": "none",
+                "request_id": "req-fundamentals-multi",
+            },
+            [check_marketio_health, fetch_fundamentals_raw],
+        )
+    )
+
+    assert [ref["end_date"] for ref in result["AA"]["fundamentals_raw"]] == ["2026-03-31", "2026-06-30"]

@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from typing import Any, Dict, List
 
 import pytest
@@ -324,19 +326,127 @@ def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) 
     assert result[0]["dataset"] == "edgar"
 
 
+def test_fetch_fundamentals_raw_partitions_source_rows_by_period_end_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        activities,
+        "_post_json",
+        lambda endpoint, payload: [
+            {
+                "ticker": "AA",
+                "ric": "AA.N",
+                "primary_ric": "AA.N",
+                "organization_id": "4295904304",
+                "cik_number": "0001675149",
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+                "frequency": "FQ",
+                "provider": "lseg",
+                "source": "lseg",
+                "field_count": 6,
+                "page_count": 1,
+                "parameter_overrides": {"Period": "FQ0:FQ-4", "Curn": "USD", "Scale": 6},
+                "data": [
+                    {
+                        "instrument": "AA.N",
+                        "statement": "income_statement",
+                        "name": "TR.F.TotRevenue",
+                        "period_start_date": "2026-01-01",
+                        "period_end_date": "2026-03-31",
+                        "financial_period_absolute": "FY2026Q1",
+                        "std_income_statement_all": 1000.0,
+                    },
+                    {
+                        "instrument": "AA.N",
+                        "statement": "income_statement",
+                        "name": "TR.F.TotRevenue",
+                        "period_start_date": "2026-04-01",
+                        "period_end_date": "2026-06-30",
+                        "financial_period_absolute": "FY2026Q2",
+                        "std_income_statement_all": 1100.0,
+                    },
+                    {
+                        "instrument": "AA.N",
+                        "statement": "income_statement",
+                        "name": "TR.F.TotRevenue",
+                        "period_start_date": "2026-07-01",
+                        "period_end_date": None,
+                        "financial_period_absolute": "FY2026Q3",
+                        "std_income_statement_all": 1200.0,
+                    },
+                ],
+            }
+        ],
+    )
+
+    result = activities.fetch_fundamentals_raw(
+        "AA",
+        "AA.N",
+        "2026-01-01",
+        "2026-12-31",
+        execution=_execution_payload(),
+    )
+
+    assert [item["end_date"] for item in result] == ["2026-03-31", "2026-06-30"]
+    assert result[0]["object_path"] == "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
+    assert result[1]["object_path"] == "source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson"
+    assert result[0]["requested_period"] == "FQ"
+    assert result[0]["request_start_date"] == "2026-01-01"
+    assert result[0]["request_end_date"] == "2026-12-31"
+    assert result[0]["request_period"] == "FQ0:FQ-4"
+    assert result[0]["request_currency"] == "USD"
+    assert result[0]["request_scale"] == 6
+    source_rows = activities._load_artifact_payload(result[0], "load fundamentals raw")
+    assert source_rows == [
+        {
+            "ticker": "AA",
+            "universe_key": "mmh5r1",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "request_id": "req-123",
+            "source_system": "marketio",
+            "frequency": "FQ",
+            "requested_period": "FQ",
+            "request_period": "FQ0:FQ-4",
+            "request_start_date": "2026-01-01",
+            "request_end_date": "2026-12-31",
+            "request_currency": "USD",
+            "request_scale": 6,
+            "provider": "lseg",
+            "source": "lseg",
+            "ric": "AA.N",
+            "primary_ric": "AA.N",
+            "organization_id": "4295904304",
+            "cik_number": "0001675149",
+            "instrument": "AA.N",
+            "statement": "income_statement",
+            "name": "TR.F.TotRevenue",
+            "period_start_date": "2026-01-01",
+            "period_end_date": "2026-03-31",
+            "financial_period_absolute": "FY2026Q1",
+            "std_income_statement_all": 1000.0,
+        }
+    ]
+
+
 def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         activities,
         "_load_artifact_payload",
         lambda artifact_ref, warning_prefix: [
             {
-                "instrument": "AA.N",
+                "instrument": artifact_ref["primary_ric"],
                 "statement": "income_statement",
                 "name": "TR.F.TotRevenue",
-                "period_start_date": "2026-01-01",
-                "period_end_date": "2026-03-31",
-                "financial_period_absolute": "FY2026Q1",
-                "std_income_statement_all": 1000.0,
+                "period_start_date": artifact_ref["start_date"],
+                "period_end_date": artifact_ref["end_date"],
+                "financial_period_absolute": "FY2026Q1"
+                if artifact_ref["end_date"] == "2026-03-31"
+                else "FY2026Q2",
+                "std_income_statement_all": 1000.0
+                if artifact_ref["end_date"] == "2026-03-31"
+                else 1100.0,
             }
         ],
     )
@@ -350,31 +460,100 @@ def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch
         [
             {
                 "ticker": "AA",
-                "uri": "gs://bucket/source/fundamentals/AA/AA_fundamentals_20260402_20260402.json",
-                "object_path": "source/fundamentals/AA/AA_fundamentals_20260402_20260402.json",
+                "uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson",
+                "object_path": "source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson",
                 "dataset": "fundamentals",
                 "ric": "AA.N",
                 "primary_ric": "AA.N",
                 "organization_id": "4295904304",
                 "cik_number": "0001675149",
-                "start_date": "2026-04-02",
-                "end_date": "2026-04-02",
+                "start_date": "2026-04-01",
+                "end_date": "2026-06-30",
                 "field_count": 6,
                 "page_count": 1,
                 "requested_period": "FQ",
+                "request_start_date": "2026-01-01",
+                "request_end_date": "2026-12-31",
+                "request_period": "FQ0:FQ-4",
+                "request_currency": "USD",
+                "request_scale": 6,
+            },
+            {
+                "ticker": "AA",
+                "uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+                "object_path": "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+                "dataset": "fundamentals",
+                "ric": "AA.N",
+                "primary_ric": "AA.N",
+                "organization_id": "4295904304",
+                "cik_number": "0001675149",
+                "start_date": "2026-01-01",
+                "end_date": "2026-03-31",
+                "field_count": 6,
+                "page_count": 1,
+                "requested_period": "FQ",
+                "request_start_date": "2026-01-01",
+                "request_end_date": "2026-12-31",
+                "request_period": "FQ0:FQ-4",
+                "request_currency": "USD",
+                "request_scale": 6,
             }
         ],
         execution=_execution_payload(),
     )
 
+    assert [item["end_date"] for item in result] == ["2026-03-31", "2026-06-30"]
     assert result[0]["ric"] == "AA.N"
     assert result[0]["organization_id"] == "4295904304"
     assert result[0]["record_count"] == 1
-    assert result[0]["source_uri"] == "gs://bucket/source/fundamentals/AA/AA_fundamentals_20260402_20260402.json"
-    assert result[0]["source_object_path"] == "source/fundamentals/AA/AA_fundamentals_20260402_20260402.json"
+    assert result[0]["object_path"] == "prod/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
+    assert result[0]["request_start_date"] == "2026-01-01"
+    assert result[0]["request_end_date"] == "2026-12-31"
+    assert result[0]["request_period"] == "FQ0:FQ-4"
+    assert result[0]["request_currency"] == "USD"
+    assert result[0]["request_scale"] == 6
+    assert result[0]["source_uri"] == "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
+    assert result[0]["source_object_path"] == "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
     assert result[0]["source_dataset"] == "fundamentals"
     assert result[0]["transform_name"] == activities.FUNDAMENTALS_PROD_TRANSFORM_NAME
     assert result[0]["transform_version"] == activities.PROD_TRANSFORM_VERSION
+    prod_rows = [
+        json.loads(line)
+        for line in Path(str(result[0]["local_path"])).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert prod_rows == [
+        {
+            "ticker": "AA",
+            "universe_key": "mmh5r1",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "request_id": "req-123",
+            "source_system": "marketio",
+            "frequency": "FQ",
+            "requested_period": "FQ",
+            "request_period": "FQ0:FQ-4",
+            "request_start_date": "2026-01-01",
+            "request_end_date": "2026-12-31",
+            "request_currency": "USD",
+            "request_scale": 6,
+            "provider": "lseg",
+            "ric": "AA.N",
+            "primary_ric": "AA.N",
+            "organization_id": "4295904304",
+            "cik_number": "0001675149",
+            "source_uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "source_object_path": "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "source_dataset": "fundamentals",
+            "transform_name": activities.FUNDAMENTALS_PROD_TRANSFORM_NAME,
+            "transform_version": activities.PROD_TRANSFORM_VERSION,
+            "instrument": "AA.N",
+            "financial_period_absolute": "FY2026Q1",
+            "period_start_date": "2026-01-01",
+            "period_end_date": "2026-03-31",
+            "is_tot_revenue": 1000.0,
+        }
+    ]
 
 
 def test_fetch_prices_prod_derives_from_stored_source_artifact(monkeypatch: pytest.MonkeyPatch) -> None:

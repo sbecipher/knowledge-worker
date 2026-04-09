@@ -61,9 +61,9 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
 - Metadata source artifacts: `source/metadata/{TICKER}/{TICKER}_{workflow_id}.json`
 - Metadata manifests: `source/metadata/manifests/{workflow_id}.json`
 - EDGAR submissions: `source/edgar/{TICKER}/{TICKER}_edgar_{date}.json`
-- Fundamentals:  
-  - Raw: `source/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
-  - Prod: `prod/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
+- Fundamentals lake layout:
+  - Raw: `source/fundamentals/frequency=FQ/end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
+  - Prod: `prod/fundamentals/frequency=FQ/end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
 - Prices lake layout:
   - Raw: `source/prices/granularity=day/end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
   - Prod: `prod/prices/granularity=day/end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
@@ -80,7 +80,12 @@ contracts: raw files repeat Marketio raw artifact metadata and store
 artifact metadata and store `date`/`instrument` plus the canonical Marketio
 snake_case daily market fields. Both layouts include `requested_period`,
 `as_of_date`, `effective_start_date`, `effective_end_date`, and
-`bar_granularity=day` for BigQuery ingestion.
+`bar_granularity=day` for BigQuery ingestion. Fundamentals raw/prod files are
+also stored as NDJSON, partitioned by row `period_end_date` under the shared
+`end_date=...` key, and repeat request context (`request_start_date`,
+`request_end_date`, `request_period`, `request_currency`, `request_scale`) on
+every row. For fundamentals, the lake `end_date` means financial
+`period_end_date`, not the original request filter.
 
 ## Run the worker
 
@@ -371,7 +376,7 @@ Functions.
 - `period` accepts `day|week|month|quarter`; the worker resolves effective tradable dates from `as_of_date` with `pandas_market_calendars` and still fetches daily-grain rows from Marketio
 - `fundamentals_mode=stage` is rejected as an invalid request
 - Market daily raw retries once locally when the API returns a 200 with unusable empty-field payloads, then falls back to Temporal activity retries if the response remains empty
-- Uploads fundamentals/metadata as JSON and prices as NDJSON, with execution metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `universe_key`, `layer`, `ticker`, `requested_period`, `effective_start_date`, `effective_end_date`).
+- Uploads metadata as JSON and fundamentals/prices as NDJSON, with execution metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `universe_key`, `layer`, `ticker`, `requested_period`). Prices also stamp `effective_start_date` / `effective_end_date`; fundamentals stamp the request context plus partition `end_date`.
 
 ## Activities
 
@@ -380,5 +385,5 @@ Functions.
 - `resolve_company_identifiers`: Pull company metadata from `/api/v2/companies` and return compact CIK/RIC routing data.
 - `persist_company_metadata`: Upload normalized per-ticker metadata artifacts and a run manifest under `source/metadata/`.
 - `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under `source/edgar/`.
-- `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw`, persist the raw artifact, then derive `prod/fundamentals/...` locally from the stored source artifact with explicit lineage metadata.
+- `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw`, persist partitioned NDJSON under `source/fundamentals/`, then derive partitioned `prod/fundamentals/` artifacts locally from the stored source rows with explicit lineage metadata.
 - `fetch_prices_raw` / `fetch_prices_prod`: Pull market daily raw data from `/api/v2/market/daily/raw`, resolve requested tradable windows from `period` + `as_of_date`, persist NDJSON under `source/prices/`, then derive `prod/prices/` locally from the stored source artifact with explicit lineage metadata.

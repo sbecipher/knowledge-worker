@@ -105,6 +105,28 @@ def build_object_path(
         )
         return str(PurePosixPath(*parts))
 
+    if dataset == "fundamentals":
+        if not ticker:
+            raise ValueError("ticker required for fundamentals path")
+        if not suffix:
+            raise ValueError("suffix required for fundamentals path")
+        if not requested_period:
+            raise ValueError("requested_period required for fundamentals path")
+        if not effective_end_date:
+            raise ValueError("effective_end_date required for fundamentals path")
+        safe_ticker = sanitize_path_segment(ticker.upper())
+        safe_frequency = sanitize_path_segment(str(requested_period).upper())
+        parts.extend(
+            [
+                "fundamentals",
+                f"frequency={safe_frequency}",
+                f"end_date={format_iso_date(effective_end_date)}",
+                f"ticker={safe_ticker}",
+                f"{sanitize_path_segment(suffix)}.ndjson",
+            ]
+        )
+        return str(PurePosixPath(*parts))
+
     parts.append(dataset)
     if ticker:
         safe_ticker = sanitize_path_segment(ticker.upper())
@@ -116,17 +138,6 @@ def build_object_path(
         filename_parts = []
         if safe_ticker:
             filename_parts.append(safe_ticker)
-        if suffix:
-            filename_parts.append(sanitize_path_segment(suffix))
-    elif dataset == "fundamentals":
-        filename_parts = []
-        if safe_ticker:
-            filename_parts.append(safe_ticker)
-        filename_parts.append("fundamentals")
-        if start_date:
-            filename_parts.append(format_date(start_date))
-        if end_date:
-            filename_parts.append(format_date(end_date))
         if suffix:
             filename_parts.append(sanitize_path_segment(suffix))
     else:

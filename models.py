@@ -88,6 +88,11 @@ class ArtifactRef:
     as_of_date: Optional[str] = None
     effective_start_date: Optional[str] = None
     effective_end_date: Optional[str] = None
+    request_start_date: Optional[str] = None
+    request_end_date: Optional[str] = None
+    request_period: Optional[str] = None
+    request_currency: Optional[str] = None
+    request_scale: Optional[int] = None
     record_count: int = 0
     local_path: Optional[str] = None
     provider: Optional[str] = None

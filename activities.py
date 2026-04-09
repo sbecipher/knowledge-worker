@@ -57,6 +57,8 @@ MARKET_BAR_GRANULARITY_DAY = "day"
 MARKETIO_MARKET_EMPTY_RETRY_DELAY_SECONDS = 3.0
 MARKETIO_MARKET_EMPTY_RESPONSE_TYPE = "EmptyMarketFieldsResponse"
 DEFAULT_MARKET_CALENDAR = "XNYS"
+FUNDAMENTALS_DEFAULT_FREQUENCY = "FQ"
+FUNDAMENTALS_DEFAULT_REQUEST_PERIOD = "FQ0"
 EXCHANGE_CALENDAR_MAP = {
     "ARC": "XNYS",
     "ASE": "XNYS",
@@ -924,6 +926,322 @@ def _save_price_artifacts(
     return summaries
 
 
+def _optional_iso_date(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    try:
+        return format_iso_date(value)
+    except ValueError:
+        return _optional_str(value)
+
+
+def _fundamentals_request_context(artifact: Dict[str, Any]) -> Dict[str, Any]:
+    parameter_overrides = artifact.get("parameter_overrides")
+    if not isinstance(parameter_overrides, dict):
+        parameter_overrides = {}
+    requested_period = _optional_str(
+        _first_non_empty(
+            artifact.get("requested_period"),
+            artifact.get("frequency"),
+            parameter_overrides.get("Frq"),
+        )
+    ) or FUNDAMENTALS_DEFAULT_FREQUENCY
+    request_start_date = _optional_iso_date(
+        _first_non_empty(
+            artifact.get("request_start_date"),
+            parameter_overrides.get("SDate"),
+            artifact.get("start_date"),
+        )
+    )
+    request_end_date = _optional_iso_date(
+        _first_non_empty(
+            artifact.get("request_end_date"),
+            parameter_overrides.get("EDate"),
+            artifact.get("end_date"),
+        )
+    )
+    request_period = _optional_str(
+        _first_non_empty(
+            artifact.get("request_period"),
+            parameter_overrides.get("Period"),
+        )
+    ) or FUNDAMENTALS_DEFAULT_REQUEST_PERIOD
+    request_currency = _optional_str(
+        _first_non_empty(
+            artifact.get("request_currency"),
+            parameter_overrides.get("Curn"),
+            artifact.get("currency"),
+        )
+    )
+    request_scale = _optional_int(
+        _first_non_empty(
+            artifact.get("request_scale"),
+            parameter_overrides.get("Scale"),
+            artifact.get("scale"),
+        )
+    )
+    return {
+        "requested_period": requested_period,
+        "request_start_date": request_start_date,
+        "request_end_date": request_end_date,
+        "request_period": request_period,
+        "request_currency": request_currency,
+        "request_scale": request_scale,
+        "provider": _optional_str(artifact.get("provider")),
+        "source": _optional_str(artifact.get("source")),
+        "ric": _preferred_ric(artifact.get("ric")),
+        "primary_ric": _preferred_ric(_first_non_empty(artifact.get("primary_ric"), artifact.get("ric"))),
+        "organization_id": _optional_str(artifact.get("organization_id")),
+        "cik_number": _optional_str(artifact.get("cik_number")),
+        "field_count": _optional_int(artifact.get("field_count")),
+        "page_count": _optional_int(artifact.get("page_count")),
+        "source_uri": _optional_str(artifact.get("source_uri")),
+        "source_object_path": _optional_str(artifact.get("source_object_path")),
+        "source_dataset": _optional_str(artifact.get("source_dataset")),
+        "transform_name": _optional_str(artifact.get("transform_name")),
+        "transform_version": _optional_str(artifact.get("transform_version")),
+    }
+
+
+def _fundamentals_row_base(
+    *,
+    ticker: str,
+    universe_key: str,
+    execution: ExecutionMetadata,
+    request_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    row = {
+        "ticker": ticker,
+        "universe_key": universe_key,
+        "workflow_id": execution.workflow_id,
+        "workflow_run_id": execution.workflow_run_id,
+        "request_id": execution.request_id,
+        "source_system": "marketio",
+        "frequency": request_context["requested_period"],
+        "requested_period": request_context["requested_period"],
+        "request_period": request_context["request_period"],
+    }
+    for key in (
+        "request_start_date",
+        "request_end_date",
+        "request_currency",
+        "request_scale",
+        "provider",
+        "source",
+        "ric",
+        "primary_ric",
+        "organization_id",
+        "cik_number",
+        "source_uri",
+        "source_object_path",
+        "source_dataset",
+        "transform_name",
+        "transform_version",
+    ):
+        value = request_context.get(key)
+        if value is not None:
+            row[key] = value
+    return row
+
+
+def _flatten_fundamentals_rows(
+    artifact: Dict[str, Any],
+    *,
+    layer: str,
+    universe_key: str,
+    execution: ExecutionMetadata,
+) -> List[Dict[str, Any]]:
+    ticker = _required_ticker(artifact, f"{layer} fundamentals")
+    request_context = _fundamentals_request_context(artifact)
+    base = _fundamentals_row_base(
+        ticker=ticker,
+        universe_key=universe_key,
+        execution=execution,
+        request_context=request_context,
+    )
+    flattened_rows: List[Dict[str, Any]] = []
+    for raw_row in artifact.get("data") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        period_end_date = _optional_iso_date(raw_row.get("period_end_date"))
+        if not period_end_date:
+            logger.warning(
+                "%s fundamentals_row_missing_period_end_date row=%s",
+                _log_prefix(execution, f"fundamentals_{layer}", ticker),
+                raw_row,
+            )
+            continue
+        row = dict(base)
+        row.update(raw_row)
+        period_start_date = _optional_iso_date(row.get("period_start_date"))
+        if period_start_date is not None:
+            row["period_start_date"] = period_start_date
+        row["period_end_date"] = period_end_date
+        flattened_rows.append(row)
+    return flattened_rows
+
+
+def _save_fundamentals_artifacts(
+    artifacts: List[dict],
+    *,
+    layer: str,
+    execution: ExecutionMetadata,
+    universe_key: Optional[str] = None,
+) -> List[dict]:
+    resolved_universe_key = _resolve_universe_key(universe_key)
+    grouped: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for artifact in artifacts:
+        ticker = _required_ticker(artifact, f"{layer} fundamentals")
+        request_context = _fundamentals_request_context(artifact)
+        rows = _flatten_fundamentals_rows(
+            artifact,
+            layer=layer,
+            universe_key=resolved_universe_key,
+            execution=execution,
+        )
+        for row in rows:
+            period_end_date = str(row["period_end_date"])
+            period_start_date = _optional_iso_date(row.get("period_start_date"))
+            grouped_payload = grouped.setdefault(
+                (ticker, period_end_date),
+                {
+                    "rows": [],
+                    "ticker": ticker,
+                    "start_date": None,
+                    "end_date": period_end_date,
+                    "requested_period": request_context["requested_period"],
+                    "request_start_date": request_context["request_start_date"],
+                    "request_end_date": request_context["request_end_date"],
+                    "request_period": request_context["request_period"],
+                    "request_currency": request_context["request_currency"],
+                    "request_scale": request_context["request_scale"],
+                    "provider": request_context["provider"],
+                    "source": request_context["source"],
+                    "ric": request_context["ric"],
+                    "primary_ric": request_context["primary_ric"],
+                    "organization_id": request_context["organization_id"],
+                    "cik_number": request_context["cik_number"],
+                    "field_count": request_context["field_count"],
+                    "page_count": request_context["page_count"],
+                    "source_uri": request_context["source_uri"],
+                    "source_object_path": request_context["source_object_path"],
+                    "source_dataset": request_context["source_dataset"],
+                    "transform_name": request_context["transform_name"],
+                    "transform_version": request_context["transform_version"],
+                },
+            )
+            if period_start_date is not None and (
+                grouped_payload["start_date"] is None or period_start_date < grouped_payload["start_date"]
+            ):
+                grouped_payload["start_date"] = period_start_date
+            grouped_payload["rows"].append(row)
+
+    summaries: List[dict] = []
+    for (_, _), grouped_payload in sorted(
+        grouped.items(),
+        key=lambda item: (
+            item[1]["ticker"],
+            item[1]["end_date"],
+            item[1]["start_date"] or "",
+        ),
+    ):
+        ticker = str(grouped_payload["ticker"])
+        object_path = build_object_path(
+            layer=layer,
+            dataset="fundamentals",
+            universe_key=resolved_universe_key,
+            ticker=ticker,
+            suffix=execution.workflow_id,
+            requested_period=str(grouped_payload["requested_period"]),
+            effective_end_date=str(grouped_payload["end_date"]),
+            prefix=SETTINGS.gcs_prefix,
+        )
+        local_path = _temp_path(object_path)
+        write_ndjson(local_path, grouped_payload["rows"])
+        meta = _metadata_base(
+            layer,
+            "fundamentals",
+            execution,
+            ticker,
+            grouped_payload["start_date"],
+            str(grouped_payload["end_date"]),
+            str(grouped_payload["requested_period"]),
+            universe_key=resolved_universe_key,
+        )
+        meta["frequency"] = str(grouped_payload["requested_period"])
+        for key in ("request_start_date", "request_end_date"):
+            value = grouped_payload.get(key)
+            if value is not None:
+                meta[key] = format_iso_date(str(value))
+        for key in ("request_period", "request_currency"):
+            value = grouped_payload.get(key)
+            if value is not None:
+                meta[key] = str(value)
+        request_scale = grouped_payload.get("request_scale")
+        if request_scale is not None:
+            meta["request_scale"] = str(request_scale)
+        for key in ("provider", "source", "ric", "primary_ric", "cik_number", "organization_id"):
+            value = grouped_payload.get(key)
+            if value is not None:
+                meta[key] = str(value)
+        for key in ("source_uri", "source_object_path", "source_dataset", "transform_name", "transform_version"):
+            value = grouped_payload.get(key)
+            if value is not None:
+                meta[key] = str(value)
+        field_count = grouped_payload.get("field_count")
+        if field_count is not None:
+            meta["field_count"] = str(field_count)
+        page_count = grouped_payload.get("page_count")
+        if page_count is not None:
+            meta["page_count"] = str(page_count)
+        uri = UPLOADER.upload_file(local_path, object_path, metadata=meta)
+        ref = ArtifactRef(
+            uri=uri,
+            object_path=object_path,
+            layer=layer,
+            dataset="fundamentals",
+            universe_key=resolved_universe_key,
+            request_id=execution.request_id,
+            workflow_id=execution.workflow_id,
+            workflow_run_id=execution.workflow_run_id,
+            ticker=ticker,
+            start_date=grouped_payload["start_date"],
+            end_date=str(grouped_payload["end_date"]),
+            requested_period=str(grouped_payload["requested_period"]),
+            request_start_date=grouped_payload.get("request_start_date"),
+            request_end_date=grouped_payload.get("request_end_date"),
+            request_period=grouped_payload.get("request_period"),
+            request_currency=grouped_payload.get("request_currency"),
+            request_scale=grouped_payload.get("request_scale"),
+            record_count=len(grouped_payload["rows"]),
+            local_path=str(local_path),
+            provider=grouped_payload.get("provider"),
+            source=grouped_payload.get("source"),
+            ric=grouped_payload.get("ric"),
+            primary_ric=grouped_payload.get("primary_ric"),
+            organization_id=grouped_payload.get("organization_id"),
+            cik_number=grouped_payload.get("cik_number"),
+            field_count=grouped_payload.get("field_count"),
+            page_count=grouped_payload.get("page_count"),
+            source_uri=grouped_payload.get("source_uri"),
+            source_object_path=grouped_payload.get("source_object_path"),
+            source_dataset=grouped_payload.get("source_dataset"),
+            transform_name=grouped_payload.get("transform_name"),
+            transform_version=grouped_payload.get("transform_version"),
+        )
+        if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
+            local_path.unlink(missing_ok=True)
+            ref = ArtifactRef(**{**ref.to_payload(), "local_path": None})
+        logger.info(
+            "%s artifact_saved uri=%s object_path=%s",
+            _log_prefix(execution, f"fundamentals_{layer}", ticker),
+            uri,
+            object_path,
+        )
+        summaries.append(ref.to_payload())
+    return summaries
+
+
 def _required_ticker(artifact_ref: Dict[str, Any], artifact_type: str) -> str:
     ticker = str(artifact_ref.get("ticker") or "").strip()
     if not ticker:
@@ -1510,10 +1828,9 @@ def fetch_fundamentals_raw(
     data = _post_json(MARKETIO_ROUTE_FUNDAMENTALS_RAW, payload)
     artifacts = _artifact_list(data)
     _activity_heartbeat({"count": len(artifacts)})
-    return _save_artifacts(
+    return _save_fundamentals_artifacts(
         artifacts,
         layer="source",
-        dataset="fundamentals",
         execution=execution_meta,
         universe_key=universe_key,
     )
@@ -1564,11 +1881,17 @@ def fetch_fundamentals_prod(
                 "primary_ric": artifact_ref.get("primary_ric"),
                 "organization_id": artifact_ref.get("organization_id"),
                 "cik_number": artifact_ref.get("cik_number"),
-                "start_date": artifact_ref.get("start_date"),
-                "end_date": artifact_ref.get("end_date"),
+                "start_date": artifact_ref.get("request_start_date") or artifact_ref.get("start_date"),
+                "end_date": artifact_ref.get("request_end_date") or artifact_ref.get("end_date"),
                 "record_count": len(flattened),
                 "page_count": artifact_ref.get("page_count") or 1,
-                "frequency": artifact_ref.get("requested_period"),
+                "frequency": artifact_ref.get("requested_period") or FUNDAMENTALS_DEFAULT_FREQUENCY,
+                "requested_period": artifact_ref.get("requested_period") or FUNDAMENTALS_DEFAULT_FREQUENCY,
+                "request_start_date": artifact_ref.get("request_start_date") or artifact_ref.get("start_date"),
+                "request_end_date": artifact_ref.get("request_end_date") or artifact_ref.get("end_date"),
+                "request_period": artifact_ref.get("request_period") or FUNDAMENTALS_DEFAULT_REQUEST_PERIOD,
+                "request_currency": artifact_ref.get("request_currency"),
+                "request_scale": artifact_ref.get("request_scale"),
                 "provider": artifact_ref.get("provider") or MARKETIO_MARKET_SOURCE_LSEG,
                 "field_count": artifact_ref.get("field_count"),
                 "data": flattened,
@@ -1586,10 +1909,9 @@ def fetch_fundamentals_prod(
         )
         _activity_heartbeat({"ticker": ticker, "count": len(artifacts)})
         results.extend(artifacts)
-    return _save_artifacts(
+    return _save_fundamentals_artifacts(
         results,
         layer="prod",
-        dataset="fundamentals",
         execution=execution_meta,
         universe_key=universe_key,
     )
