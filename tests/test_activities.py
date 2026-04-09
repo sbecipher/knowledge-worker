@@ -324,49 +324,112 @@ def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) 
     assert result[0]["dataset"] == "edgar"
 
 
-def test_fetch_fundamentals_prod_uses_current_route_and_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured_calls: List[tuple[str, Dict[str, Any]]] = []
+def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        activities,
+        "_load_artifact_payload",
+        lambda artifact_ref, warning_prefix: [
+            {
+                "instrument": "AA.N",
+                "statement": "income_statement",
+                "name": "TR.F.TotRevenue",
+                "period_start_date": "2026-01-01",
+                "period_end_date": "2026-03-31",
+                "financial_period_absolute": "FY2026Q1",
+                "std_income_statement_all": 1000.0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        activities,
+        "_post_json",
+        lambda endpoint, payload: pytest.fail(f"unexpected Marketio prod call to {endpoint}"),
+    )
 
-    def fake_post(endpoint: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        captured_calls.append((endpoint, payload))
-        return [
+    result = activities.fetch_fundamentals_prod(
+        [
             {
                 "ticker": "AA",
+                "uri": "gs://bucket/source/fundamentals/AA/AA_fundamentals_20260402_20260402.json",
+                "object_path": "source/fundamentals/AA/AA_fundamentals_20260402_20260402.json",
+                "dataset": "fundamentals",
                 "ric": "AA.N",
                 "primary_ric": "AA.N",
                 "organization_id": "4295904304",
                 "cik_number": "0001675149",
                 "start_date": "2026-04-02",
                 "end_date": "2026-04-02",
-                "record_count": 1,
+                "field_count": 6,
                 "page_count": 1,
-                "data": [{"value": 1}],
-            }
-        ]
-
-    monkeypatch.setattr(activities, "_post_json", fake_post)
-
-    result = activities.fetch_fundamentals_prod(
-        [
-            {
-                "ticker": "AA",
-                "ric": "AA.N",
-                "primary_ric": "AA.N",
-                "start_date": "2026-04-02",
-                "end_date": "2026-04-02",
+                "requested_period": "FQ",
             }
         ],
         execution=_execution_payload(),
     )
 
-    assert captured_calls == [
-        (
-            activities.MARKETIO_ROUTE_FUNDAMENTALS_PROD,
-            {"ric": "AA.N", "start_date": "2026-04-02", "end_date": "2026-04-02"},
-        )
-    ]
     assert result[0]["ric"] == "AA.N"
     assert result[0]["organization_id"] == "4295904304"
+    assert result[0]["record_count"] == 1
+    assert result[0]["source_uri"] == "gs://bucket/source/fundamentals/AA/AA_fundamentals_20260402_20260402.json"
+    assert result[0]["source_object_path"] == "source/fundamentals/AA/AA_fundamentals_20260402_20260402.json"
+    assert result[0]["source_dataset"] == "fundamentals"
+    assert result[0]["transform_name"] == activities.FUNDAMENTALS_PROD_TRANSFORM_NAME
+    assert result[0]["transform_version"] == activities.PROD_TRANSFORM_VERSION
+
+
+def test_fetch_prices_prod_derives_from_stored_source_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        activities,
+        "_load_artifact_payload",
+        lambda artifact_ref, warning_prefix: [
+            {
+                "ticker": "AA",
+                "date": "2026-04-02",
+                "instrument": "AA",
+                "fields": {
+                    "TR.CLOSEPRICE": 64.08,
+                    "TR.TotalReturn1D": 3.22164948453608,
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        activities,
+        "_post_json",
+        lambda endpoint, payload: pytest.fail(f"unexpected Marketio prod call to {endpoint}"),
+    )
+
+    result = activities.fetch_prices_prod(
+        [
+            {
+                "ticker": "AA",
+                "uri": "gs://bucket/source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson",
+                "object_path": "source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson",
+                "dataset": "prices",
+                "ric": "AA.N",
+                "primary_ric": "AA.N",
+                "organization_id": "4295904304",
+                "cik_number": "0001675149",
+                "effective_start_date": "2026-04-02",
+                "effective_end_date": "2026-04-02",
+                "requested_period": "day",
+                "bar_granularity": "day",
+                "as_of_date": "2026-04-02",
+                "page_count": 1,
+                "provider": "lseg",
+            }
+        ],
+        execution=_execution_payload(),
+    )
+
+    assert result[0]["dataset"] == "prices"
+    assert result[0]["requested_period"] == "day"
+    assert result[0]["bar_granularity"] == "day"
+    assert result[0]["source_uri"] == "gs://bucket/source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson"
+    assert result[0]["source_object_path"] == "source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson"
+    assert result[0]["source_dataset"] == "prices"
+    assert result[0]["transform_name"] == activities.PRICES_PROD_TRANSFORM_NAME
+    assert result[0]["transform_version"] == activities.PROD_TRANSFORM_VERSION
 
 
 def test_fetch_prices_raw_retries_empty_field_responses_once(monkeypatch: pytest.MonkeyPatch) -> None:

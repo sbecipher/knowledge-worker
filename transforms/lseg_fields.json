@@ -1,0 +1,76 @@
+{
+  "intraday": {
+    "field_to_snake_case": {
+      "TR.OPENPRICE": "open",
+      "TR.CLOSEPRICE": "close",
+      "TR.HIGHPRICE": "high",
+      "TR.LOWPRICE": "low",
+      "TR.VOLUME": "volume",
+      "TR.AVGMONTHLYVOLUME3M": "avg_monthly_volume_3m",
+      "TR.AVGDAILYVALTRADED52W": "avg_daily_val_traded_52w",
+      "TR.PRICE52WEEKHIGH": "price_52wk_high",
+      "TR.PRICE52WEEKLOW": "price_52wk_low",
+      "TR.TOTALRETURN52WK": "total_return_52wk",
+      "TR.TOTALRETURN1D": "total_return_1d",
+      "TR.RELPRICEPCTCHG1D": "rel_price_pct_chg_1d",
+      "TR.PRICEPCTCHG1D": "price_pct_chg_1d",
+      "TR.PRICEAVGPCTDIFF2D": "price_avg_pct_diff_2d",
+      "TR.PRICEPCTCHG120D": "price_pct_chg_120d",
+      "TR.PRICEPCTCHG13W": "price_pct_chg_13w",
+      "TR.PRICEPCTCHG26W": "price_pct_chg_26w",
+      "TR.PRICEPCTCHG52W": "price_pct_chg_52w",
+      "TR.PRICEPCTCHG2D": "price_pct_chg_2d",
+      "TR.PRICEPCTCHGWTD": "price_pct_chg_wtd",
+      "TR.PRICEPCTCHGQTD": "price_pct_chg_qtd",
+      "TR.PRICENETCHG2D": "price_net_chg_2d",
+      "TR.PRICENETCHG10D": "price_net_chg_10d",
+      "TR.PRICENETCHG20D": "price_net_chg_20d",
+      "TR.PRICENETCHG30D": "price_net_chg_30d",
+      "TR.PRICENETCHG50D": "price_net_chg_50d",
+      "TR.PRICENETCHG90D": "price_net_chg_90d",
+      "TR.PRICEMOVOLATILITYDLY": "price_mo_volatility_dly",
+      "TR.PRICEMOVOLATILITYT12M": "price_mo_volatility_t12m",
+      "TR.PRICETARGETMEAN": "price_target_mean",
+      "TR.PRICETOMEANPRICETARGET": "price_to_mean_price_target",
+      "TR.FWDPTOEPSSMARTEST": "fwd_pto_eps_smart_est",
+      "TR.PTOEPSMEANEST": "pto_eps_mean_est",
+      "TR.PEGSMART": "peg_smart",
+      "TR.PTOEBTSMARTEST": "pto_ebt_smart_est",
+      "TR.PRICEMOREGIONRANK": "price_mo_region_rank",
+      "TR.F.PRICETOBOOKVALUEPERSHR": "price_to_book_value_per_shr",
+      "TR.PTOBPSSMARTEST": "pto_bps_smart_est",
+      "TR.PTOCPXSMARTEST": "pto_cpx_smart_est",
+      "TR.PRICEAVG2D": "price_avg_2d",
+      "TR.PRICEAVG5D": "price_avg_5d",
+      "TR.PRICEAVG10D": "price_avg_10d",
+      "TR.PRICEAVG30D": "price_avg_30d",
+      "TR.PRICE50DAYAVERAGE": "price_50_day_average",
+      "TR.PRICEAVG100D": "price_avg_100d",
+      "TR.PRICE150DAYAVERAGE": "price_150_day_average",
+      "TR.PRICE200DAYAVERAGE": "price_200_day_average",
+      "TR.PRICE52WKHIGHFLG1D": "price_52wk_high_flg_1d",
+      "TR.PRICE52WKHIGHFLG5D": "price_52wk_high_flg_5d",
+      "TR.PRICE52WKLOWFLG1D": "price_52wk_low_flg_1d",
+      "TR.PRICE52WKLOWFLG5D": "price_52wk_low_flg_5d"
+    }
+  },
+  "fundamentals": {
+    "statement_config": {
+      "income_statement": {
+        "prefix": "TR.F.IncomeStatement",
+        "value_key": "std_income_statement_all",
+        "value_label": "std income statement all"
+      },
+      "balance_sheet": {
+        "prefix": "TR.F.BalanceSheet",
+        "value_key": "std_balance_sheet_all",
+        "value_label": "std balance sheet all"
+      },
+      "cashflow_statement": {
+        "prefix": "TR.F.CashflowStatement",
+        "value_key": "std_cash_flow_all",
+        "value_label": "std cash flow all"
+      }
+    }
+  }
+}

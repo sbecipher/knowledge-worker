@@ -98,6 +98,11 @@ class ArtifactRef:
     cik_number: Optional[str] = None
     field_count: Optional[int] = None
     page_count: Optional[int] = None
+    source_uri: Optional[str] = None
+    source_object_path: Optional[str] = None
+    source_dataset: Optional[str] = None
+    transform_name: Optional[str] = None
+    transform_version: Optional[str] = None
 
     def to_payload(self) -> Dict[str, Any]:
         return asdict(self)

@@ -380,5 +380,5 @@ Functions.
 - `resolve_company_identifiers`: Pull company metadata from `/api/v2/companies` and return compact CIK/RIC routing data.
 - `persist_company_metadata`: Upload normalized per-ticker metadata artifacts and a run manifest under `source/metadata/`.
 - `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under `source/edgar/`.
-- `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw` and `/api/v2/fundamentals/production`.
-- `fetch_prices_raw` / `fetch_prices_prod`: Pull market daily data from `/api/v2/market/daily/raw` and `/api/v2/market/daily/production`, resolve requested tradable windows from `period` + `as_of_date`, and write NDJSON lake artifacts under `source/prices/` and `prod/prices/`.
+- `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw`, persist the raw artifact, then derive `prod/fundamentals/...` locally from the stored source artifact with explicit lineage metadata.
+- `fetch_prices_raw` / `fetch_prices_prod`: Pull market daily raw data from `/api/v2/market/daily/raw`, resolve requested tradable windows from `period` + `as_of_date`, persist NDJSON under `source/prices/`, then derive `prod/prices/` locally from the stored source artifact with explicit lineage metadata.

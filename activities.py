@@ -28,6 +28,8 @@ from storage_utils import (
     write_ndjson,
     write_json,
 )
+from transforms.fundamentals import prod_fundamentals_data
+from transforms.prices import prod_prices_data
 
 logger = logging.getLogger(__name__)
 SETTINGS = load_settings()
@@ -48,9 +50,7 @@ _NON_RETRYABLE_HTTP_STATUS_CODES = {400, 401, 403, 404, 422}
 MARKETIO_ROUTE_COMPANIES = "/api/v2/companies"
 MARKETIO_ROUTE_EDGAR_RAW = "/api/v2/edgar/raw"
 MARKETIO_ROUTE_FUNDAMENTALS_RAW = "/api/v2/fundamentals/raw"
-MARKETIO_ROUTE_FUNDAMENTALS_PROD = "/api/v2/fundamentals/production"
 MARKETIO_ROUTE_MARKET_DAILY_RAW = "/api/v2/market/daily/raw"
-MARKETIO_ROUTE_MARKET_DAILY_PROD = "/api/v2/market/daily/production"
 MARKETIO_MARKET_SOURCE_LSEG = "lseg"
 MARKETIO_MARKET_FREQUENCY_DAILY = "daily"
 MARKET_BAR_GRANULARITY_DAY = "day"
@@ -68,6 +68,9 @@ EXCHANGE_CALENDAR_MAP = {
     "NYQ": "XNYS",
     "NYS": "XNYS",
 }
+FUNDAMENTALS_PROD_TRANSFORM_NAME = "fundamentals_prod_transform"
+PRICES_PROD_TRANSFORM_NAME = "prices_prod_transform"
+PROD_TRANSFORM_VERSION = "v1"
 
 
 def _non_retryable(message: str, type_name: str = "InvalidRequest") -> ApplicationError:
@@ -827,6 +830,11 @@ def _save_price_artifacts(
                 "primary_ric": _preferred_ric(_first_non_empty(artifact.get("primary_ric"), artifact.get("ric"))),
                 "organization_id": _optional_str(artifact.get("organization_id")),
                 "cik_number": _optional_str(artifact.get("cik_number")),
+                "source_uri": _optional_str(artifact.get("source_uri")),
+                "source_object_path": _optional_str(artifact.get("source_object_path")),
+                "source_dataset": _optional_str(artifact.get("source_dataset")),
+                "transform_name": _optional_str(artifact.get("transform_name")),
+                "transform_version": _optional_str(artifact.get("transform_version")),
             },
         )["rows"].extend(rows)
 
@@ -867,6 +875,10 @@ def _save_price_artifacts(
             value = grouped_payload.get(key)
             if value is not None:
                 meta[key] = str(value)
+        for key in ("source_uri", "source_object_path", "source_dataset", "transform_name", "transform_version"):
+            value = grouped_payload.get(key)
+            if value is not None:
+                meta[key] = str(value)
         uri = UPLOADER.upload_file(local_path, object_path, metadata=meta)
         ref = ArtifactRef(
             uri=uri,
@@ -893,6 +905,11 @@ def _save_price_artifacts(
             primary_ric=grouped_payload.get("primary_ric"),
             organization_id=grouped_payload.get("organization_id"),
             cik_number=grouped_payload.get("cik_number"),
+            source_uri=grouped_payload.get("source_uri"),
+            source_object_path=grouped_payload.get("source_object_path"),
+            source_dataset=grouped_payload.get("source_dataset"),
+            transform_name=grouped_payload.get("transform_name"),
+            transform_version=grouped_payload.get("transform_version"),
         )
         if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
             local_path.unlink(missing_ok=True)
@@ -998,6 +1015,21 @@ def _save_artifacts(
         organization_id = str(artifact.get("organization_id") or "").strip()
         if organization_id:
             meta["organization_id"] = organization_id
+        source_uri = _optional_str(artifact.get("source_uri"))
+        if source_uri:
+            meta["source_uri"] = source_uri
+        source_object_path = _optional_str(artifact.get("source_object_path"))
+        if source_object_path:
+            meta["source_object_path"] = source_object_path
+        source_dataset = _optional_str(artifact.get("source_dataset"))
+        if source_dataset:
+            meta["source_dataset"] = source_dataset
+        transform_name = _optional_str(artifact.get("transform_name"))
+        if transform_name:
+            meta["transform_name"] = transform_name
+        transform_version = _optional_str(artifact.get("transform_version"))
+        if transform_version:
+            meta["transform_version"] = transform_version
         field_count = artifact.get("field_count")
         if field_count is not None:
             meta["field_count"] = str(field_count)
@@ -1035,6 +1067,11 @@ def _save_artifacts(
             cik_number=cik_number or None,
             field_count=int(field_count) if isinstance(field_count, int) else None,
             page_count=int(page_count) if isinstance(page_count, int) else None,
+            source_uri=source_uri,
+            source_object_path=source_object_path,
+            source_dataset=source_dataset,
+            transform_name=transform_name,
+            transform_version=transform_version,
         )
 
         if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
@@ -1507,16 +1544,45 @@ def fetch_fundamentals_prod(
     results: List[dict] = []
     for artifact_ref in raw_artifacts:
         ticker = _required_ticker(artifact_ref, "raw fundamentals")
-        start_date = artifact_ref.get("start_date")
-        end_date = artifact_ref.get("end_date")
-        payload = _artifact_identifier_payload(artifact_ref)
-        payload.update({"start_date": start_date, "end_date": end_date})
-        data = _post_json(MARKETIO_ROUTE_FUNDAMENTALS_PROD, payload)
-        artifacts = _artifact_list(data)
+        source_rows = _load_artifact_payload(
+            artifact_ref,
+            warning_prefix=f"Unable to load raw fundamentals artifact for ticker={ticker}",
+        )
+        payload = {
+            "ticker": ticker,
+            "ric": artifact_ref.get("ric"),
+            "primary_ric": artifact_ref.get("primary_ric"),
+            "cik_number": artifact_ref.get("cik_number"),
+            "organization_id": artifact_ref.get("organization_id"),
+            "data": source_rows,
+        }
+        flattened = prod_fundamentals_data(payload)
+        artifacts = [
+            {
+                "ticker": ticker,
+                "ric": artifact_ref.get("ric"),
+                "primary_ric": artifact_ref.get("primary_ric"),
+                "organization_id": artifact_ref.get("organization_id"),
+                "cik_number": artifact_ref.get("cik_number"),
+                "start_date": artifact_ref.get("start_date"),
+                "end_date": artifact_ref.get("end_date"),
+                "record_count": len(flattened),
+                "page_count": artifact_ref.get("page_count") or 1,
+                "frequency": artifact_ref.get("requested_period"),
+                "provider": artifact_ref.get("provider") or MARKETIO_MARKET_SOURCE_LSEG,
+                "field_count": artifact_ref.get("field_count"),
+                "data": flattened,
+                "source_uri": artifact_ref.get("uri"),
+                "source_object_path": artifact_ref.get("object_path"),
+                "source_dataset": artifact_ref.get("dataset"),
+                "transform_name": FUNDAMENTALS_PROD_TRANSFORM_NAME,
+                "transform_version": PROD_TRANSFORM_VERSION,
+            }
+        ]
         logger.info(
-            "%s fundamentals_prod_request ric=%s",
+            "%s fundamentals_prod_transform source_object_path=%s",
             _log_prefix(execution_meta, "fundamentals_prod", ticker),
-            payload.get("ric"),
+            artifact_ref.get("object_path"),
         )
         _activity_heartbeat({"ticker": ticker, "count": len(artifacts)})
         results.extend(artifacts)
@@ -1585,28 +1651,73 @@ def fetch_prices_prod(
         ticker = _required_ticker(artifact_ref, "raw prices")
         start_date = artifact_ref.get("effective_start_date") or artifact_ref.get("start_date")
         end_date = artifact_ref.get("effective_end_date") or artifact_ref.get("end_date")
-        payload = _artifact_identifier_payload(artifact_ref)
-        payload.update(
+        source_rows = _load_artifact_payload(
+            artifact_ref,
+            warning_prefix=f"Unable to load raw prices artifact for ticker={ticker}",
+        )
+        rehydrated_rows: List[Dict[str, Any]] = []
+        requested_fields: List[str] = []
+        seen_fields: set[str] = set()
+        for source_row in source_rows or []:
+            if not isinstance(source_row, dict):
+                continue
+            provider_fields = source_row.get("fields")
+            if not isinstance(provider_fields, dict):
+                provider_fields = {}
+            row_payload: Dict[str, Any] = {
+                "date": source_row.get("date"),
+                "instrument": source_row.get("instrument"),
+            }
+            for field_name, value in provider_fields.items():
+                row_payload[str(field_name)] = value
+                if str(field_name) not in seen_fields:
+                    requested_fields.append(str(field_name))
+                    seen_fields.add(str(field_name))
+            rehydrated_rows.append(row_payload)
+        payload = {
+            "ticker": ticker,
+            "ric": artifact_ref.get("ric"),
+            "primary_ric": artifact_ref.get("primary_ric"),
+            "cik_number": artifact_ref.get("cik_number"),
+            "organization_id": artifact_ref.get("organization_id"),
+            "frequency": MARKETIO_MARKET_FREQUENCY_DAILY,
+            "fields": requested_fields,
+            "data": rehydrated_rows,
+        }
+        flattened = prod_prices_data(payload)
+        artifacts = [
             {
+                "ticker": ticker,
+                "ric": artifact_ref.get("ric"),
+                "primary_ric": artifact_ref.get("primary_ric"),
+                "organization_id": artifact_ref.get("organization_id"),
+                "cik_number": artifact_ref.get("cik_number"),
                 "start_date": start_date,
                 "end_date": end_date,
+                "record_count": len(flattened),
+                "page_count": artifact_ref.get("page_count") or 1,
                 "frequency": MARKETIO_MARKET_FREQUENCY_DAILY,
+                "provider": artifact_ref.get("provider") or MARKETIO_MARKET_SOURCE_LSEG,
+                "field_count": len(requested_fields),
+                "requested_period": artifact_ref.get("requested_period") or MARKET_BAR_GRANULARITY_DAY,
+                "bar_granularity": artifact_ref.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY,
+                "as_of_date": artifact_ref.get("as_of_date") or artifact_ref.get("effective_end_date"),
+                "effective_start_date": start_date,
+                "effective_end_date": end_date,
+                "data": flattened,
+                "source_uri": artifact_ref.get("uri"),
+                "source_object_path": artifact_ref.get("object_path"),
+                "source_dataset": artifact_ref.get("dataset"),
+                "transform_name": PRICES_PROD_TRANSFORM_NAME,
+                "transform_version": PROD_TRANSFORM_VERSION,
             }
-        )
-        data = _post_json(MARKETIO_ROUTE_MARKET_DAILY_PROD, payload)
-        artifacts = _artifact_list(data)
+        ]
         logger.info(
-            "%s prices_prod_request ric=%s",
+            "%s prices_prod_transform source_object_path=%s",
             _log_prefix(execution_meta, "prices_prod", ticker),
-            payload.get("ric"),
+            artifact_ref.get("object_path"),
         )
         _activity_heartbeat({"ticker": ticker, "count": len(artifacts)})
-        for artifact in artifacts:
-            artifact["requested_period"] = artifact_ref.get("requested_period") or MARKET_BAR_GRANULARITY_DAY
-            artifact["bar_granularity"] = artifact_ref.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY
-            artifact["as_of_date"] = artifact_ref.get("as_of_date") or artifact_ref.get("effective_end_date")
-            artifact["effective_start_date"] = start_date
-            artifact["effective_end_date"] = end_date
         results.extend(artifacts)
     return _save_price_artifacts(
         results,
