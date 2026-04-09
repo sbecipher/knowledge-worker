@@ -23,7 +23,7 @@ from storage_utils import build_object_path, format_iso_date
 logger = logging.getLogger(__name__)
 
 LEGACY_ROOT = "source/intraday"
-MIGRATION_ROOT = "source/prices/migrations"
+LOCAL_MANIFEST_DIR = Path("/tmp")
 MARKET_BAR_GRANULARITY = "day"
 REQUESTED_PERIOD = "day"
 
@@ -293,8 +293,8 @@ def _ndjson_bytes(rows: Iterable[Dict[str, Any]]) -> bytes:
     return payload.encode("utf-8")
 
 
-def _migration_manifest_object_path(*, gcs_prefix: str, migration_run_id: str) -> str:
-    return str(PurePosixPath(*(p for p in [gcs_prefix, MIGRATION_ROOT, f"{migration_run_id}.json"] if p)))
+def _local_manifest_path(*, migration_run_id: str) -> Path:
+    return LOCAL_MANIFEST_DIR / f"{migration_run_id}.json"
 
 
 def _legacy_prefix(*, gcs_prefix: str, prefix: Optional[str]) -> str:
@@ -404,16 +404,13 @@ def run_migration(*, prefix: Optional[str], dry_run: bool, universe_key: Optiona
     manifest["migrated_count"] = len(manifest["mappings"])
     manifest["skipped_count"] = len(manifest["skipped"])
     manifest["failure_count"] = len(manifest["failures"])
-    if not dry_run:
-        manifest_object_path = _migration_manifest_object_path(
-            gcs_prefix=settings.gcs_prefix,
-            migration_run_id=migration_run_id,
-        )
-        bucket.blob(manifest_object_path).upload_from_string(
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-            content_type="application/json",
-        )
-        manifest["manifest_object_path"] = manifest_object_path
+    LOCAL_MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
+    local_manifest_path = _local_manifest_path(migration_run_id=migration_run_id)
+    manifest["local_manifest_path"] = str(local_manifest_path)
+    local_manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     return manifest
 
 

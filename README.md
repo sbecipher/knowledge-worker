@@ -65,8 +65,8 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
   - Raw: `source/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
   - Prod: `prod/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
 - Prices lake layout:
-  - Raw: `source/prices/bar_granularity=day/effective_end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
-  - Prod: `prod/prices/bar_granularity=day/effective_end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
+  - Raw: `source/prices/granularity=day/end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
+  - Prod: `prod/prices/granularity=day/end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
 
 The worker reads `active.json` as the authoritative universe membership input,
 resolves identifiers only when needed, and persists metadata only when

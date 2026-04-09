@@ -97,8 +97,8 @@ def build_object_path(
         parts.extend(
             [
                 "prices",
-                f"bar_granularity={sanitize_path_segment(bar_granularity.lower())}",
-                f"effective_end_date={format_iso_date(effective_end_date)}",
+                f"granularity={sanitize_path_segment(bar_granularity.lower())}",
+                f"end_date={format_iso_date(effective_end_date)}",
                 f"ticker={safe_ticker}",
                 f"{sanitize_path_segment(suffix)}.ndjson",
             ]

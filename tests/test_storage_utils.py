@@ -91,4 +91,4 @@ def test_prices_path_uses_partitioned_layout_and_ndjson_extension() -> None:
         bar_granularity="day",
         effective_end_date="2024-01-31",
     )
-    assert path == "source/prices/bar_granularity=day/effective_end_date=2024-01-31/ticker=AA/wf-123.ndjson"
+    assert path == "source/prices/granularity=day/end_date=2024-01-31/ticker=AA/wf-123.ndjson"
