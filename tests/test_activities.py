@@ -170,6 +170,32 @@ def test_persist_company_metadata_writes_per_ticker_artifacts_and_manifest(
     ]
 
 
+def test_resolve_market_window_day_uses_last_completed_session() -> None:
+    window = activities._resolve_market_window(period="day", as_of_date="2024-01-31", exchange_code="NYQ")
+
+    assert window == {
+        "requested_period": "day",
+        "bar_granularity": "day",
+        "as_of_date": "2024-01-31",
+        "effective_start_date": "2024-01-31",
+        "effective_end_date": "2024-01-31",
+        "calendar": "XNYS",
+    }
+
+
+def test_resolve_market_window_week_and_month_follow_trading_calendar() -> None:
+    week_window = activities._resolve_market_window(period="week", as_of_date="2024-01-31", exchange_code="NYQ")
+    month_window = activities._resolve_market_window(period="month", as_of_date="2024-01-31", exchange_code="NYQ")
+    quarter_window = activities._resolve_market_window(period="quarter", as_of_date="2024-04-10", exchange_code="NYQ")
+
+    assert week_window["effective_start_date"] == "2024-01-29"
+    assert week_window["effective_end_date"] == "2024-01-31"
+    assert month_window["effective_start_date"] == "2024-01-02"
+    assert month_window["effective_end_date"] == "2024-01-31"
+    assert quarter_window["effective_start_date"] == "2024-04-01"
+    assert quarter_window["effective_end_date"] == "2024-04-10"
+
+
 def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_calls: List[tuple[str, Dict[str, Any]]] = []
 
@@ -237,7 +263,7 @@ def test_fetch_fundamentals_prod_uses_current_route_and_identity(monkeypatch: py
     assert result[0]["organization_id"] == "4295904304"
 
 
-def test_fetch_intraday_raw_retries_empty_field_responses_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_prices_raw_retries_empty_field_responses_once(monkeypatch: pytest.MonkeyPatch) -> None:
     responses: List[List[Dict[str, Any]]] = [
         [
             {
@@ -290,13 +316,24 @@ def test_fetch_intraday_raw_retries_empty_field_responses_once(monkeypatch: pyte
 
     monkeypatch.setattr(activities, "_post_json", fake_post)
     monkeypatch.setattr(activities.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        activities,
+        "_resolve_market_window",
+        lambda **_: {
+            "requested_period": "day",
+            "bar_granularity": "day",
+            "as_of_date": "2026-04-02",
+            "effective_start_date": "2026-04-02",
+            "effective_end_date": "2026-04-02",
+            "calendar": "XNYS",
+        },
+    )
 
-    result = activities.fetch_intraday_raw(
+    result = activities.fetch_prices_raw(
         "AA",
         "AA.N",
         "2026-04-02",
-        "2026-04-02",
-        "daily",
+        "day",
         execution=_execution_payload(),
     )
 
@@ -309,14 +346,16 @@ def test_fetch_intraday_raw_retries_empty_field_responses_once(monkeypatch: pyte
         "end_date": "2026-04-02",
         "frequency": "daily",
     }
-    assert result[0]["dataset"] == "intraday"
+    assert result[0]["dataset"] == "prices"
     assert result[0]["provider"] == "lseg"
     assert result[0]["source"] == "lseg"
     assert result[0]["ric"] == "AA.N"
-    assert result[0]["field_count"] == 1
+    assert result[0]["bar_granularity"] == "day"
+    assert result[0]["requested_period"] == "day"
+    assert result[0]["record_count"] == 1
 
 
-def test_fetch_intraday_raw_raises_retryable_error_after_empty_field_retry(
+def test_fetch_prices_raw_raises_retryable_error_after_empty_field_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_post(endpoint: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -341,14 +380,25 @@ def test_fetch_intraday_raw_raises_retryable_error_after_empty_field_retry(
 
     monkeypatch.setattr(activities, "_post_json", fake_post)
     monkeypatch.setattr(activities.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        activities,
+        "_resolve_market_window",
+        lambda **_: {
+            "requested_period": "day",
+            "bar_granularity": "day",
+            "as_of_date": "2026-04-02",
+            "effective_start_date": "2026-04-02",
+            "effective_end_date": "2026-04-02",
+            "calendar": "XNYS",
+        },
+    )
 
     with pytest.raises(ApplicationError) as exc_info:
-        activities.fetch_intraday_raw(
+        activities.fetch_prices_raw(
             "AA",
             "AA.N",
             "2026-04-02",
-            "2026-04-02",
-            "daily",
+            "day",
             execution=_execution_payload(),
         )
 

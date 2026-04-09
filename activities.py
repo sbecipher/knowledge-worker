@@ -1,5 +1,5 @@
 import base64
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import json
 import logging
 import threading
@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+import pandas as pd
+import pandas_market_calendars as mcal
 from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 from temporalio import activity
@@ -22,6 +24,8 @@ from storage_utils import (
     build_object_path,
     ensure_dir,
     format_date,
+    format_iso_date,
+    write_ndjson,
     write_json,
 )
 
@@ -49,8 +53,28 @@ MARKETIO_ROUTE_MARKET_DAILY_RAW = "/api/v2/market/daily/raw"
 MARKETIO_ROUTE_MARKET_DAILY_PROD = "/api/v2/market/daily/production"
 MARKETIO_MARKET_SOURCE_LSEG = "lseg"
 MARKETIO_MARKET_FREQUENCY_DAILY = "daily"
+MARKET_BAR_GRANULARITY_DAY = "day"
 MARKETIO_MARKET_EMPTY_RETRY_DELAY_SECONDS = 3.0
 MARKETIO_MARKET_EMPTY_RESPONSE_TYPE = "EmptyMarketFieldsResponse"
+DEFAULT_MARKET_CALENDAR = "XNYS"
+EXCHANGE_CALENDAR_MAP = {
+    "ARC": "XNYS",
+    "ASE": "XNYS",
+    "BATS": "XNYS",
+    "NAS": "XNAS",
+    "NASD": "XNAS",
+    "NMS": "XNAS",
+    "NYSE": "XNYS",
+    "NYQ": "XNYS",
+    "NYS": "XNYS",
+}
+PRICE_FIELD_MAP = {
+    "TR.OPENPRICE": "open",
+    "TR.HIGHPRICE": "high",
+    "TR.LOWPRICE": "low",
+    "TR.CLOSEPRICE": "close",
+    "TR.ACCUMULATEDVOLUME": "volume",
+}
 
 
 def _non_retryable(message: str, type_name: str = "InvalidRequest") -> ApplicationError:
@@ -195,6 +219,7 @@ def _active_universe_index_payload(universe_key: str) -> Dict[str, Any]:
     object_path, rows = _load_active_universe_rows(universe_key)
     tickers: List[str] = []
     rics: Dict[str, str] = {}
+    exchange_codes: Dict[str, str] = {}
     rows_by_ticker: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         ticker = str(row.get("ticker") or "").strip().upper()
@@ -205,11 +230,15 @@ def _active_universe_index_payload(universe_key: str) -> Dict[str, Any]:
         ric = _preferred_ric(row.get("primary_ric") or row.get("ric"))
         if ric:
             rics[ticker] = ric
+        exchange_code = _optional_str(row.get("exchange_code"))
+        if exchange_code:
+            exchange_codes[ticker] = exchange_code.upper()
     return {
         "active_source_uri": _object_uri(object_path),
         "active_source_object_path": object_path,
         "tickers": tickers,
         "rics": rics,
+        "exchange_codes": exchange_codes,
         "rows_by_ticker": rows_by_ticker,
         "record_count": len(tickers),
     }
@@ -250,6 +279,27 @@ def _optional_bool(value: Any) -> Optional[bool]:
     if text in {"false", "0", "no", "n", "off"}:
         return False
     return None
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_iso_date(value: str, field_name: str) -> date:
+    try:
+        return date.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        raise _non_retryable(f"{field_name} must be YYYY-MM-DD", type_name="InvalidRequest") from exc
 
 
 def _first_non_empty(*values: Any) -> Any:
@@ -443,7 +493,11 @@ def _load_artifact_payload(artifact_ref: Dict[str, Any], warning_prefix: str) ->
                 raise _non_retryable(f"{warning_prefix}: missing object_path for {uri}", type_name="ArtifactReferenceError")
             loaded = UPLOADER.download_json(object_path)
         elif local_path:
-            loaded = json.loads(Path(local_path).read_text(encoding="utf-8"))
+            raw_text = Path(local_path).read_text(encoding="utf-8")
+            if local_path.endswith(".ndjson"):
+                loaded = [json.loads(line) for line in raw_text.splitlines() if line.strip()]
+            else:
+                loaded = json.loads(raw_text)
         else:
             raise _non_retryable(
                 f"{warning_prefix}: no durable artifact reference available for ticker={artifact_ref.get('ticker')}",
@@ -538,7 +592,7 @@ def _fetch_market_daily_raw_with_empty_retry(
             return artifacts
         logger.warning(
             "%s market_raw_empty_fields attempt=%s/%s frequency=%s field_count=%s top_level_fields=%s row_count=%s populated_row_fields=%s",
-            _log_prefix(execution, "intraday_raw", ticker),
+            _log_prefix(execution, "prices_raw", ticker),
             attempt,
             2,
             frequency,
@@ -554,6 +608,326 @@ def _fetch_market_daily_raw_with_empty_retry(
         f"Market raw response returned empty fields for ticker={ticker} frequency={frequency} after local retry",
         type=MARKETIO_MARKET_EMPTY_RESPONSE_TYPE,
     )
+
+
+def _calendar_name_for_exchange_code(exchange_code: Optional[str]) -> str:
+    code = str(exchange_code or "").strip().upper()
+    return EXCHANGE_CALENDAR_MAP.get(code, DEFAULT_MARKET_CALENDAR)
+
+
+def _resolve_market_window(
+    *,
+    period: str,
+    as_of_date: str,
+    exchange_code: Optional[str] = None,
+) -> Dict[str, str]:
+    normalized_period = str(period or MARKET_BAR_GRANULARITY_DAY).strip().lower()
+    if normalized_period not in {"day", "week", "month", "quarter"}:
+        raise _non_retryable(f"Unsupported period: {normalized_period}", type_name="InvalidRequest")
+    anchor_date = _parse_iso_date(as_of_date, "as_of_date")
+    calendar_name = _calendar_name_for_exchange_code(exchange_code)
+    calendar = mcal.get_calendar(calendar_name)
+    schedule = calendar.schedule(
+        start_date=(anchor_date - timedelta(days=370)).isoformat(),
+        end_date=anchor_date.isoformat(),
+    )
+    if schedule.empty:
+        raise _non_retryable(
+            f"No market sessions available for calendar={calendar_name} as_of_date={as_of_date}",
+            type_name="InvalidRequest",
+        )
+    sessions = [timestamp.date() for timestamp in schedule.index]
+    effective_end = sessions[-1]
+    if effective_end == anchor_date and len(sessions) >= 2:
+        session_schedule = schedule[schedule.index.date == effective_end]
+        if not session_schedule.empty:
+            market_close = session_schedule.iloc[-1]["market_close"]
+            if isinstance(market_close, pd.Timestamp):
+                market_close_utc = market_close.tz_convert("UTC") if market_close.tzinfo else market_close.tz_localize("UTC")
+                if datetime.now(timezone.utc) < market_close_utc.to_pydatetime():
+                    effective_end = sessions[-2]
+    if normalized_period == "day":
+        effective_start = effective_end
+    else:
+        if normalized_period == "week":
+            boundary = effective_end - timedelta(days=effective_end.weekday())
+        elif normalized_period == "month":
+            boundary = effective_end.replace(day=1)
+        else:
+            quarter_start_month = ((effective_end.month - 1) // 3) * 3 + 1
+            boundary = effective_end.replace(month=quarter_start_month, day=1)
+        period_schedule = calendar.schedule(start_date=boundary.isoformat(), end_date=effective_end.isoformat())
+        if period_schedule.empty:
+            effective_start = effective_end
+        else:
+            effective_start = period_schedule.index[0].date()
+    return {
+        "requested_period": normalized_period,
+        "bar_granularity": MARKET_BAR_GRANULARITY_DAY,
+        "as_of_date": anchor_date.isoformat(),
+        "effective_start_date": effective_start.isoformat(),
+        "effective_end_date": effective_end.isoformat(),
+        "calendar": calendar_name,
+    }
+
+
+def _price_artifact_ticker(artifact: Dict[str, Any]) -> str:
+    security = artifact.get("security")
+    security_ticker = security.get("ticker") if isinstance(security, dict) else None
+    ticker = str(artifact.get("ticker") or security_ticker or "").strip().upper()
+    if not ticker:
+        raise _non_retryable("Missing ticker in prices artifact", type_name="ArtifactValidationError")
+    return ticker
+
+
+def _price_row_base(
+    *,
+    artifact: Dict[str, Any],
+    ticker: str,
+    universe_key: str,
+    execution: ExecutionMetadata,
+    requested_period: str,
+    as_of_date: str,
+    effective_start_date: str,
+    effective_end_date: str,
+) -> Dict[str, Any]:
+    security = artifact.get("security") if isinstance(artifact.get("security"), dict) else {}
+    return {
+        "ticker": ticker,
+        "date": None,
+        "requested_period": requested_period,
+        "as_of_date": as_of_date,
+        "effective_start_date": effective_start_date,
+        "effective_end_date": effective_end_date,
+        "bar_granularity": artifact.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY,
+        "universe_key": universe_key,
+        "workflow_id": execution.workflow_id,
+        "workflow_run_id": execution.workflow_run_id,
+        "request_id": execution.request_id,
+        "source_system": "marketio",
+        "provider": _optional_str(artifact.get("provider")) or _optional_str(artifact.get("source")) or MARKETIO_MARKET_SOURCE_LSEG,
+        "security_id": _optional_str(_first_non_empty(security.get("id"), artifact.get("security_id"))),
+        "company_id": _optional_str(_first_non_empty(security.get("company_id"), artifact.get("company_id"))),
+        "security_code": _optional_str(_first_non_empty(security.get("code"), artifact.get("security_code"))),
+        "security_name": _optional_str(_first_non_empty(security.get("name"), artifact.get("security_name"))),
+        "currency": _optional_str(_first_non_empty(security.get("currency"), artifact.get("currency"))),
+        "composite_ticker": _optional_str(_first_non_empty(security.get("composite_ticker"), artifact.get("composite_ticker"))),
+        "figi": _optional_str(_first_non_empty(security.get("figi"), artifact.get("figi"))),
+        "composite_figi": _optional_str(_first_non_empty(security.get("composite_figi"), artifact.get("composite_figi"))),
+        "share_class_figi": _optional_str(_first_non_empty(security.get("share_class_figi"), artifact.get("share_class_figi"))),
+        "primary_listing": _optional_bool(_first_non_empty(security.get("primary_listing"), artifact.get("primary_listing"))),
+        "open": None,
+        "high": None,
+        "low": None,
+        "close": None,
+        "volume": None,
+        "adj_open": None,
+        "adj_high": None,
+        "adj_low": None,
+        "adj_close": None,
+        "adj_volume": None,
+        "dividend": None,
+        "factor": None,
+        "split_ratio": None,
+        "intraperiod": None,
+        "change": None,
+        "percent_change": None,
+        "fifty_two_week_high": None,
+        "fifty_two_week_low": None,
+    }
+
+
+def _flatten_price_rows(
+    artifact: Dict[str, Any],
+    *,
+    universe_key: str,
+    execution: ExecutionMetadata,
+) -> List[Dict[str, Any]]:
+    ticker = _price_artifact_ticker(artifact)
+    requested_period = str(artifact.get("requested_period") or MARKET_BAR_GRANULARITY_DAY)
+    as_of_date = str(artifact.get("as_of_date") or artifact.get("effective_end_date") or "")
+    effective_start_date = str(artifact.get("effective_start_date") or artifact.get("start_date") or "")
+    effective_end_date = str(artifact.get("effective_end_date") or artifact.get("end_date") or "")
+    base = _price_row_base(
+        artifact=artifact,
+        ticker=ticker,
+        universe_key=universe_key,
+        execution=execution,
+        requested_period=requested_period,
+        as_of_date=as_of_date,
+        effective_start_date=effective_start_date,
+        effective_end_date=effective_end_date,
+    )
+
+    flattened_rows: List[Dict[str, Any]] = []
+    stock_prices = artifact.get("stock_prices")
+    if isinstance(stock_prices, list) and stock_prices:
+        for raw_row in stock_prices:
+            if not isinstance(raw_row, dict):
+                continue
+            row = dict(base)
+            row.update(
+                {
+                    "date": _optional_str(raw_row.get("date")),
+                    "open": _optional_float(raw_row.get("open")),
+                    "high": _optional_float(raw_row.get("high")),
+                    "low": _optional_float(raw_row.get("low")),
+                    "close": _optional_float(raw_row.get("close")),
+                    "volume": _optional_float(raw_row.get("volume")),
+                    "adj_open": _optional_float(raw_row.get("adj_open")),
+                    "adj_high": _optional_float(raw_row.get("adj_high")),
+                    "adj_low": _optional_float(raw_row.get("adj_low")),
+                    "adj_close": _optional_float(raw_row.get("adj_close")),
+                    "adj_volume": _optional_float(raw_row.get("adj_volume")),
+                    "dividend": _optional_float(raw_row.get("dividend")),
+                    "factor": _optional_float(raw_row.get("factor")),
+                    "split_ratio": _optional_float(raw_row.get("split_ratio")),
+                    "intraperiod": _optional_bool(raw_row.get("intraperiod")),
+                    "change": _optional_float(raw_row.get("change")),
+                    "percent_change": _optional_float(raw_row.get("percent_change")),
+                    "fifty_two_week_high": _optional_float(raw_row.get("fifty_two_week_high")),
+                    "fifty_two_week_low": _optional_float(raw_row.get("fifty_two_week_low")),
+                }
+            )
+            flattened_rows.append(row)
+        return flattened_rows
+
+    for raw_row in artifact.get("data") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        fields = raw_row.get("fields") if isinstance(raw_row.get("fields"), dict) else {}
+        row = dict(base)
+        row["date"] = _optional_str(raw_row.get("date"))
+        row["composite_ticker"] = _optional_str(_first_non_empty(row.get("composite_ticker"), raw_row.get("instrument")))
+        for provider_field, target_field in PRICE_FIELD_MAP.items():
+            value = raw_row.get(target_field)
+            if value is None:
+                value = fields.get(provider_field)
+            row[target_field] = _optional_float(value)
+        row["adj_open"] = _optional_float(_first_non_empty(raw_row.get("adj_open"), fields.get("TR.ADJOPENPRICE")))
+        row["adj_high"] = _optional_float(_first_non_empty(raw_row.get("adj_high"), fields.get("TR.ADJHIGHPRICE")))
+        row["adj_low"] = _optional_float(_first_non_empty(raw_row.get("adj_low"), fields.get("TR.ADJLOWPRICE")))
+        row["adj_close"] = _optional_float(_first_non_empty(raw_row.get("adj_close"), fields.get("TR.ADJCLOSEPRICE")))
+        row["adj_volume"] = _optional_float(_first_non_empty(raw_row.get("adj_volume"), fields.get("TR.ADJVOLUME")))
+        row["dividend"] = _optional_float(raw_row.get("dividend"))
+        row["factor"] = _optional_float(raw_row.get("factor"))
+        row["split_ratio"] = _optional_float(raw_row.get("split_ratio"))
+        row["intraperiod"] = _optional_bool(raw_row.get("intraperiod"))
+        row["change"] = _optional_float(raw_row.get("change"))
+        row["percent_change"] = _optional_float(raw_row.get("percent_change"))
+        row["fifty_two_week_high"] = _optional_float(raw_row.get("fifty_two_week_high"))
+        row["fifty_two_week_low"] = _optional_float(raw_row.get("fifty_two_week_low"))
+        flattened_rows.append(row)
+    return flattened_rows
+
+
+def _save_price_artifacts(
+    artifacts: List[dict],
+    *,
+    layer: str,
+    execution: ExecutionMetadata,
+    universe_key: Optional[str] = None,
+) -> List[dict]:
+    resolved_universe_key = _resolve_universe_key(universe_key)
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for artifact in artifacts:
+        ticker = _price_artifact_ticker(artifact)
+        rows = _flatten_price_rows(artifact, universe_key=resolved_universe_key, execution=execution)
+        if not rows:
+            continue
+        grouped.setdefault(
+            ticker,
+            {
+                "rows": [],
+                "requested_period": artifact.get("requested_period") or MARKET_BAR_GRANULARITY_DAY,
+                "bar_granularity": artifact.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY,
+                "as_of_date": artifact.get("as_of_date") or artifact.get("effective_end_date"),
+                "effective_start_date": artifact.get("effective_start_date") or artifact.get("start_date"),
+                "effective_end_date": artifact.get("effective_end_date") or artifact.get("end_date"),
+                "provider": _optional_str(artifact.get("provider")),
+                "source": _optional_str(artifact.get("source")),
+                "ric": _preferred_ric(_first_non_empty(artifact.get("primary_ric"), artifact.get("ric"))),
+                "primary_ric": _preferred_ric(_first_non_empty(artifact.get("primary_ric"), artifact.get("ric"))),
+                "organization_id": _optional_str(artifact.get("organization_id")),
+                "cik_number": _optional_str(artifact.get("cik_number")),
+            },
+        )["rows"].extend(rows)
+
+    summaries: List[dict] = []
+    for ticker, grouped_payload in grouped.items():
+        object_path = build_object_path(
+            layer=layer,
+            dataset="prices",
+            universe_key=resolved_universe_key,
+            ticker=ticker,
+            suffix=execution.workflow_id,
+            bar_granularity=str(grouped_payload["bar_granularity"]),
+            effective_end_date=str(grouped_payload["effective_end_date"]),
+            prefix=SETTINGS.gcs_prefix,
+        )
+        local_path = _temp_path(object_path)
+        write_ndjson(local_path, grouped_payload["rows"])
+        meta = _metadata_base(
+            layer,
+            "prices",
+            execution,
+            ticker,
+            str(grouped_payload["effective_start_date"]),
+            str(grouped_payload["effective_end_date"]),
+            None,
+            universe_key=resolved_universe_key,
+        )
+        meta.update(
+            {
+                "requested_period": str(grouped_payload["requested_period"]),
+                "bar_granularity": str(grouped_payload["bar_granularity"]),
+                "as_of_date": format_iso_date(str(grouped_payload["as_of_date"])),
+                "effective_start_date": format_iso_date(str(grouped_payload["effective_start_date"])),
+                "effective_end_date": format_iso_date(str(grouped_payload["effective_end_date"])),
+            }
+        )
+        for key in ("provider", "source", "ric", "primary_ric", "cik_number", "organization_id"):
+            value = grouped_payload.get(key)
+            if value is not None:
+                meta[key] = str(value)
+        uri = UPLOADER.upload_file(local_path, object_path, metadata=meta)
+        ref = ArtifactRef(
+            uri=uri,
+            object_path=object_path,
+            layer=layer,
+            dataset="prices",
+            universe_key=resolved_universe_key,
+            request_id=execution.request_id,
+            workflow_id=execution.workflow_id,
+            workflow_run_id=execution.workflow_run_id,
+            ticker=ticker,
+            start_date=str(grouped_payload["effective_start_date"]),
+            end_date=str(grouped_payload["effective_end_date"]),
+            requested_period=str(grouped_payload["requested_period"]),
+            bar_granularity=str(grouped_payload["bar_granularity"]),
+            as_of_date=str(grouped_payload["as_of_date"]),
+            effective_start_date=str(grouped_payload["effective_start_date"]),
+            effective_end_date=str(grouped_payload["effective_end_date"]),
+            record_count=len(grouped_payload["rows"]),
+            local_path=str(local_path),
+            provider=grouped_payload.get("provider"),
+            source=grouped_payload.get("source"),
+            ric=grouped_payload.get("ric"),
+            primary_ric=grouped_payload.get("primary_ric"),
+            organization_id=grouped_payload.get("organization_id"),
+            cik_number=grouped_payload.get("cik_number"),
+        )
+        if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
+            local_path.unlink(missing_ok=True)
+            ref = ArtifactRef(**{**ref.to_payload(), "local_path": None})
+        logger.info(
+            "%s artifact_saved uri=%s object_path=%s",
+            _log_prefix(execution, f"prices_{layer}", ticker),
+            uri,
+            object_path,
+        )
+        summaries.append(ref.to_payload())
+    return summaries
 
 
 def _required_ticker(artifact_ref: Dict[str, Any], artifact_type: str) -> str:
@@ -607,10 +981,10 @@ def _save_artifacts(
             dataset=dataset,
             universe_key=resolved_universe_key,
             ticker=ticker,
-            freq=freq or artifact.get("frequency"),
             start_date=start_date,
             end_date=end_date,
             suffix=filename_suffix,
+            requested_period=freq or artifact.get("frequency"),
             prefix=SETTINGS.gcs_prefix,
         )
         local_path = _temp_path(object_path)
@@ -673,7 +1047,7 @@ def _save_artifacts(
             ticker=str(ticker).upper() if ticker else None,
             start_date=start_date,
             end_date=end_date,
-            frequency=freq or artifact.get("frequency"),
+            requested_period=_optional_str(freq or artifact.get("frequency")),
             record_count=record_count,
             local_path=str(local_path),
             provider=provider or None,
@@ -750,6 +1124,7 @@ def load_active_universe_index(
         "active_source_object_path": index["active_source_object_path"],
         "tickers": index["tickers"],
         "rics": index["rics"],
+        "exchange_codes": index["exchange_codes"],
         "record_count": index["record_count"],
         "universe_key": resolved_universe_key,
     }
@@ -1177,23 +1552,24 @@ def fetch_fundamentals_prod(
     )
 
 
-@activity.defn(name="fetch_intraday_raw")
-def fetch_intraday_raw(
+@activity.defn(name="fetch_prices_raw")
+def fetch_prices_raw(
     ticker: str,
     ric: Optional[str],
-    start_date: str,
-    end_date: str,
-    frequency: str,
+    as_of_date: str,
+    period: str,
+    exchange_code: Optional[str] = None,
     universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     execution_meta = _execution_metadata_from_payload(execution)
+    window = _resolve_market_window(period=period, as_of_date=as_of_date, exchange_code=exchange_code)
     payload = _identifier_payload(ticker=ticker, ric=ric)
     payload.update(
         {
             "source": MARKETIO_MARKET_SOURCE_LSEG,
-            "start_date": start_date,
-            "end_date": end_date,
+            "start_date": window["effective_start_date"],
+            "end_date": window["effective_end_date"],
             "frequency": MARKETIO_MARKET_FREQUENCY_DAILY,
         }
     )
@@ -1201,34 +1577,37 @@ def fetch_intraday_raw(
         payload,
         execution_meta,
         ticker=ticker,
-        frequency=MARKETIO_MARKET_FREQUENCY_DAILY,
+        frequency=window["requested_period"],
     )
+    for artifact in artifacts:
+        artifact["requested_period"] = window["requested_period"]
+        artifact["bar_granularity"] = window["bar_granularity"]
+        artifact["as_of_date"] = window["as_of_date"]
+        artifact["effective_start_date"] = window["effective_start_date"]
+        artifact["effective_end_date"] = window["effective_end_date"]
     _activity_heartbeat({"count": len(artifacts)})
-    return _save_artifacts(
+    return _save_price_artifacts(
         artifacts,
         layer="source",
-        dataset="intraday",
         execution=execution_meta,
-        freq=MARKETIO_MARKET_FREQUENCY_DAILY,
         universe_key=universe_key,
     )
 
 
-@activity.defn(name="fetch_intraday_prod")
-def fetch_intraday_prod(
+@activity.defn(name="fetch_prices_prod")
+def fetch_prices_prod(
     raw_artifacts: List[dict],
-    frequency: str,
     universe_key: Optional[str] = None,
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     if not raw_artifacts:
-        raise _non_retryable("No raw intraday artifacts provided for production step", type_name="ArtifactValidationError")
+        raise _non_retryable("No raw prices artifacts provided for production step", type_name="ArtifactValidationError")
     execution_meta = _execution_metadata_from_payload(execution)
     results: List[dict] = []
     for artifact_ref in raw_artifacts:
-        ticker = _required_ticker(artifact_ref, "raw intraday")
-        start_date = artifact_ref.get("start_date")
-        end_date = artifact_ref.get("end_date")
+        ticker = _required_ticker(artifact_ref, "raw prices")
+        start_date = artifact_ref.get("effective_start_date") or artifact_ref.get("start_date")
+        end_date = artifact_ref.get("effective_end_date") or artifact_ref.get("end_date")
         payload = _artifact_identifier_payload(artifact_ref)
         payload.update(
             {
@@ -1240,17 +1619,21 @@ def fetch_intraday_prod(
         data = _post_json(MARKETIO_ROUTE_MARKET_DAILY_PROD, payload)
         artifacts = _artifact_list(data)
         logger.info(
-            "%s intraday_prod_request ric=%s",
-            _log_prefix(execution_meta, "intraday_prod", ticker),
+            "%s prices_prod_request ric=%s",
+            _log_prefix(execution_meta, "prices_prod", ticker),
             payload.get("ric"),
         )
         _activity_heartbeat({"ticker": ticker, "count": len(artifacts)})
+        for artifact in artifacts:
+            artifact["requested_period"] = artifact_ref.get("requested_period") or MARKET_BAR_GRANULARITY_DAY
+            artifact["bar_granularity"] = artifact_ref.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY
+            artifact["as_of_date"] = artifact_ref.get("as_of_date") or artifact_ref.get("effective_end_date")
+            artifact["effective_start_date"] = start_date
+            artifact["effective_end_date"] = end_date
         results.extend(artifacts)
-    return _save_artifacts(
+    return _save_price_artifacts(
         results,
         layer="prod",
-        dataset="intraday",
         execution=execution_meta,
-        freq=MARKETIO_MARKET_FREQUENCY_DAILY,
         universe_key=universe_key,
     )

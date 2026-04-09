@@ -106,8 +106,8 @@ def test_metadata_only_workflow_persists_metadata_only() -> None:
             {
                 "universe_key": "mmh5r1",
                 "tickers": ["AA"],
-                "start_date": "2024-01-01",
-                "end_date": "2024-01-31",
+                "fundamentals_mode": "none",
+                "market_mode": "none",
                 "metadata_only": True,
                 "request_id": "req-metadata",
             },
@@ -118,7 +118,7 @@ def test_metadata_only_workflow_persists_metadata_only() -> None:
     assert result["request_id"] == "req-metadata"
     assert result["metadata"]["manifest_object_path"] == "source/metadata/manifests/wf-123.json"
     assert result["AA"]["metadata_source"][0]["dataset"] == "metadata"
-    assert result["AA"]["intraday_raw"] == []
+    assert result["AA"]["prices_raw"] == []
 
 
 def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() -> None:
@@ -163,8 +163,8 @@ def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() 
             {
                 "universe_key": "mmh5r1",
                 "tickers": ["AA"],
-                "start_date": "2024-01-01",
-                "end_date": "2024-01-31",
+                "fundamentals_mode": "none",
+                "market_mode": "none",
                 "edgar_only": True,
                 "request_id": "req-edgar",
             },
@@ -179,26 +179,26 @@ def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() 
     assert result["AA"]["edgar_source"][0]["dataset"] == "edgar"
 
 
-def test_intraday_only_explicit_ticker_skips_identifier_resolution() -> None:
+def test_prices_only_explicit_ticker_skips_identifier_resolution() -> None:
     captured: Dict[str, Any] = {}
 
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
 
-    @activity.defn(name="fetch_intraday_raw")
-    def fetch_intraday_raw(
+    @activity.defn(name="fetch_prices_raw")
+    def fetch_prices_raw(
         ticker: str,
         ric: str,
-        start_date: str,
-        end_date: str,
-        frequency: str,
+        as_of_date: str,
+        period: str,
+        exchange_code: str,
         universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         captured["ticker"] = ticker
         captured["ric"] = ric
-        ref = _artifact_ref(ticker, "intraday", "source")
+        ref = _artifact_ref(ticker, "prices", "source")
         ref["ric"] = ric
         return [ref]
 
@@ -207,61 +207,59 @@ def test_intraday_only_explicit_ticker_skips_identifier_resolution() -> None:
             {
                 "universe_key": "mmh5r1",
                 "tickers": ["AA"],
-                "start_date": "2024-01-01",
-                "end_date": "2024-01-31",
+                "as_of_date": "2024-01-31",
                 "fundamentals_mode": "none",
-                "intraday_mode": "raw",
-                "request_id": "req-intraday-only",
+                "market_mode": "raw",
+                "request_id": "req-prices-only",
             },
-            [check_marketio_health, fetch_intraday_raw],
+            [check_marketio_health, fetch_prices_raw],
         )
     )
 
     assert captured["ticker"] == "AA"
     assert captured["ric"] is None
-    assert result["AA"]["intraday_raw"][0]["ticker"] == "AA"
+    assert result["AA"]["prices_raw"][0]["ticker"] == "AA"
     assert result["identifiers"]["ciks"] == {}
 
 
-def test_intraday_only_explicit_ticker_can_omit_universe_key() -> None:
+def test_prices_only_explicit_ticker_can_omit_universe_key() -> None:
     captured: Dict[str, Any] = {}
 
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
 
-    @activity.defn(name="fetch_intraday_raw")
-    def fetch_intraday_raw(
+    @activity.defn(name="fetch_prices_raw")
+    def fetch_prices_raw(
         ticker: str,
         ric: str,
-        start_date: str,
-        end_date: str,
-        frequency: str,
+        as_of_date: str,
+        period: str,
+        exchange_code: str,
         universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         captured["ticker"] = ticker
         captured["universe_key"] = universe_key
-        ref = _artifact_ref(ticker, "intraday", "source")
+        ref = _artifact_ref(ticker, "prices", "source")
         return [ref]
 
     result = asyncio.run(
         _run_workflow(
             {
                 "tickers": ["AA"],
-                "start_date": "2024-01-01",
-                "end_date": "2024-01-31",
+                "as_of_date": "2024-01-31",
                 "fundamentals_mode": "none",
-                "intraday_mode": "raw",
-                "request_id": "req-intraday-no-universe",
+                "market_mode": "raw",
+                "request_id": "req-prices-no-universe",
             },
-            [check_marketio_health, fetch_intraday_raw],
+            [check_marketio_health, fetch_prices_raw],
         )
     )
 
     assert captured["ticker"] == "AA"
     assert captured["universe_key"] is None
-    assert result["AA"]["intraday_raw"][0]["ticker"] == "AA"
+    assert result["AA"]["prices_raw"][0]["ticker"] == "AA"
 
 
 def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only() -> None:
@@ -309,7 +307,7 @@ def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only(
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
                 "fundamentals_mode": "raw",
-                "intraday_mode": "none",
+                "market_mode": "none",
                 "request_id": "req-full-universe",
             },
             [check_marketio_health, load_active_universe_index, fetch_fundamentals_raw],
@@ -323,7 +321,7 @@ def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only(
     assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
 
 
-def test_combined_metadata_source_and_intraday_reuses_identifier_resolution() -> None:
+def test_combined_metadata_source_and_prices_reuses_identifier_resolution() -> None:
     captured: Dict[str, Any] = {}
 
     @activity.defn(name="check_marketio_health")
@@ -362,18 +360,18 @@ def test_combined_metadata_source_and_intraday_reuses_identifier_resolution() ->
             "artifacts_by_ticker": {"AA": [_artifact_ref("AA", "metadata", "source")]},
         }
 
-    @activity.defn(name="fetch_intraday_raw")
-    def fetch_intraday_raw(
+    @activity.defn(name="fetch_prices_raw")
+    def fetch_prices_raw(
         ticker: str,
         ric: str,
-        start_date: str,
-        end_date: str,
-        frequency: str,
+        as_of_date: str,
+        period: str,
+        exchange_code: str,
         universe_key: str,
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         captured["ric"] = ric
-        ref = _artifact_ref(ticker, "intraday", "source")
+        ref = _artifact_ref(ticker, "prices", "source")
         ref["ric"] = ric
         ref["primary_ric"] = ric
         return [ref]
@@ -383,14 +381,13 @@ def test_combined_metadata_source_and_intraday_reuses_identifier_resolution() ->
             {
                 "universe_key": "mmh5r1",
                 "tickers": ["AA"],
-                "start_date": "2024-01-01",
-                "end_date": "2024-01-31",
+                "as_of_date": "2024-01-31",
                 "fundamentals_mode": "none",
-                "intraday_mode": "raw",
+                "market_mode": "raw",
                 "metadata_mode": "source",
                 "request_id": "req-combined",
             },
-            [check_marketio_health, resolve_company_identifiers, persist_company_metadata, fetch_intraday_raw],
+            [check_marketio_health, resolve_company_identifiers, persist_company_metadata, fetch_prices_raw],
         )
     )
 
@@ -398,7 +395,7 @@ def test_combined_metadata_source_and_intraday_reuses_identifier_resolution() ->
     assert captured["ric"] == "AA.N"
     assert result["metadata"]["persisted_tickers"] == ["AA"]
     assert result["AA"]["metadata_source"][0]["dataset"] == "metadata"
-    assert result["AA"]["intraday_raw"][0]["ric"] == "AA.N"
+    assert result["AA"]["prices_raw"][0]["ric"] == "AA.N"
 
 
 def test_partial_failure_isolated_per_ticker() -> None:
@@ -428,7 +425,7 @@ def test_partial_failure_isolated_per_ticker() -> None:
                 "start_date": "2024-01-01",
                 "end_date": "2024-01-31",
                 "fundamentals_mode": "raw",
-                "intraday_mode": "none",
+                "market_mode": "none",
                 "request_id": "req-partial",
             },
             [check_marketio_health, fetch_fundamentals_raw],

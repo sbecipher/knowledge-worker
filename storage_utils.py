@@ -2,35 +2,11 @@ import json
 import logging
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from google.cloud.storage import Client as GCSClient # type: ignore
 
 logger = logging.getLogger(__name__)
-
-INTRADAY_DIR_MAP = {
-    "daily": "intraday",
-    "eod": "intraday",
-    "weekly": "week",
-    "wk": "week",
-    "monthly": "month",
-    "mth": "month",
-    "quarterly": "quarter",
-    "quarter": "quarter",
-    "qtr": "quarter",
-}
-
-INTRADAY_FREQ_SLUGS = {
-    "daily": "eod",
-    "eod": "eod",
-    "weekly": "wk",
-    "wk": "wk",
-    "monthly": "mth",
-    "mth": "mth",
-    "quarterly": "qtr",
-    "quarter": "qtr",
-    "qtr": "qtr",
-}
 
 
 _SAFE_SEGMENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]")
@@ -67,15 +43,29 @@ def format_date(value: Any) -> str:
     raise ValueError(f"Unsupported date format: {value}")
 
 
+def format_iso_date(value: Any) -> str:
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")  # type: ignore[attr-defined]
+    if isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return text
+        if re.fullmatch(r"\d{8}", text):
+            return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
+    raise ValueError(f"Unsupported ISO date format: {value}")
+
+
 def build_object_path(
     layer: str,
     dataset: str,
     universe_key: Optional[str] = None,
     ticker: Optional[str] = None,
-    freq: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     suffix: Optional[str] = None,
+    requested_period: Optional[str] = None,
+    bar_granularity: Optional[str] = None,
+    effective_end_date: Optional[str] = None,
     prefix: str = "",
 ) -> str:
     """
@@ -94,16 +84,28 @@ def build_object_path(
         parts.append(f"{sanitize_path_segment(suffix)}.json")
         return str(PurePosixPath(*parts))
 
-    freq_normalized = freq.lower() if isinstance(freq, str) else None
-    if dataset == "intraday" and freq_normalized:
-        dataset_dir = INTRADAY_DIR_MAP.get(freq_normalized, "intraday")
-        raw_freq = INTRADAY_FREQ_SLUGS.get(freq_normalized, freq_normalized)
-        filename_freq_slug = sanitize_path_segment(raw_freq)
-    else:
-        dataset_dir = dataset
-        filename_freq_slug = sanitize_path_segment(freq_normalized) if freq_normalized else ""
+    if dataset == "prices":
+        if not ticker:
+            raise ValueError("ticker required for prices path")
+        if not suffix:
+            raise ValueError("suffix required for prices path")
+        if not bar_granularity:
+            raise ValueError("bar_granularity required for prices path")
+        if not effective_end_date:
+            raise ValueError("effective_end_date required for prices path")
+        safe_ticker = sanitize_path_segment(ticker.upper())
+        parts.extend(
+            [
+                "prices",
+                f"bar_granularity={sanitize_path_segment(bar_granularity.lower())}",
+                f"effective_end_date={format_iso_date(effective_end_date)}",
+                f"ticker={safe_ticker}",
+                f"{sanitize_path_segment(suffix)}.ndjson",
+            ]
+        )
+        return str(PurePosixPath(*parts))
 
-    parts.append(dataset_dir)
+    parts.append(dataset)
     if ticker:
         safe_ticker = sanitize_path_segment(ticker.upper())
         parts.append(safe_ticker)
@@ -131,8 +133,8 @@ def build_object_path(
         filename_parts = []
         if ticker and dataset != "models":
             filename_parts.append(safe_ticker)
-        if filename_freq_slug:
-            filename_parts.append(filename_freq_slug)
+        if requested_period:
+            filename_parts.append(sanitize_path_segment(requested_period.lower()))
         if start_date:
             filename_parts.append(format_date(start_date))
         if end_date:
@@ -209,7 +211,7 @@ class GCSUploader:
         blob = self._ensure_bucket().blob(object_path)
         if metadata:
             blob.metadata = metadata
-        blob.content_type = "application/json"
+        blob.content_type = "application/x-ndjson" if object_path.endswith(".ndjson") else "application/json"
         blob.upload_from_filename(str(local_path))
         uri = f"gs://{self.bucket_name}/{object_path}"
         logger.info("Uploaded %s to %s", local_path, uri)
@@ -218,11 +220,23 @@ class GCSUploader:
     def download_json(self, object_path: str) -> Any:
         blob = self._ensure_bucket().blob(object_path)
         payload = blob.download_as_bytes()
-        return json.loads(payload.decode("utf-8"))
+        text = payload.decode("utf-8")
+        if object_path.endswith(".ndjson"):
+            return [json.loads(line) for line in text.splitlines() if line.strip()]
+        return json.loads(text)
 
 
 def write_json(path: Path, payload: Any) -> Path:
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8") as fp:
         json.dump(payload, fp, ensure_ascii=False)
+    return path
+
+
+def write_ndjson(path: Path, rows: Iterable[Dict[str, Any]]) -> Path:
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as fp:
+        for row in rows:
+            fp.write(json.dumps(row, ensure_ascii=False))
+            fp.write("\n")
     return path

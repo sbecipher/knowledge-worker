@@ -4,29 +4,28 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 
-DEFAULT_INTRADAY_FREQUENCY = "daily"
+DEFAULT_PERIOD = "day"
 DEFAULT_FUNDAMENTALS_MODE = "prod"
-DEFAULT_INTRADAY_MODE = "prod"
+DEFAULT_MARKET_MODE = "prod"
 DEFAULT_METADATA_MODE = "none"
 DEFAULT_MAX_CONCURRENT_TICKERS = 5
 
 
-def normalize_intraday_frequency(value: Any) -> str:
-    text = str(value or DEFAULT_INTRADAY_FREQUENCY).strip().lower()
-    if text == "eod":
-        return DEFAULT_INTRADAY_FREQUENCY
-    return text or DEFAULT_INTRADAY_FREQUENCY
+def normalize_period(value: Any) -> str:
+    text = str(value or DEFAULT_PERIOD).strip().lower()
+    return text or DEFAULT_PERIOD
 
 
 @dataclass(frozen=True)
 class MarketDataRequest:
     universe_key: Optional[str]
     tickers: List[str]
-    start_date: str
-    end_date: str
-    intraday_frequency: str = DEFAULT_INTRADAY_FREQUENCY
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    as_of_date: Optional[str] = None
+    period: str = DEFAULT_PERIOD
     fundamentals_mode: str = DEFAULT_FUNDAMENTALS_MODE
-    intraday_mode: str = DEFAULT_INTRADAY_MODE
+    market_mode: str = DEFAULT_MARKET_MODE
     metadata_mode: str = DEFAULT_METADATA_MODE
     edgar_source: bool = False
     metadata_only: bool = False
@@ -43,11 +42,12 @@ class MarketDataRequest:
         return cls(
             universe_key=_optional_str(payload.get("universe_key")),
             tickers=[str(ticker).strip().upper() for ticker in payload.get("tickers", []) if str(ticker).strip()],
-            start_date=str(payload["start_date"]),
-            end_date=str(payload["end_date"]),
-            intraday_frequency=normalize_intraday_frequency(payload.get("intraday_frequency")),
+            start_date=_optional_str(payload.get("start_date")),
+            end_date=_optional_str(payload.get("end_date")),
+            as_of_date=_optional_str(payload.get("as_of_date")),
+            period=normalize_period(payload.get("period")),
             fundamentals_mode=str(payload.get("fundamentals_mode") or DEFAULT_FUNDAMENTALS_MODE).strip().lower(),
-            intraday_mode=str(payload.get("intraday_mode") or DEFAULT_INTRADAY_MODE).strip().lower(),
+            market_mode=str(payload.get("market_mode") or DEFAULT_MARKET_MODE).strip().lower(),
             metadata_mode=metadata_mode,
             edgar_source=bool(payload.get("edgar_source", False)),
             metadata_only=metadata_only,
@@ -83,7 +83,11 @@ class ArtifactRef:
     ticker: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
-    frequency: Optional[str] = None
+    requested_period: Optional[str] = None
+    bar_granularity: Optional[str] = None
+    as_of_date: Optional[str] = None
+    effective_start_date: Optional[str] = None
+    effective_end_date: Optional[str] = None
     record_count: int = 0
     local_path: Optional[str] = None
     provider: Optional[str] = None

@@ -48,6 +48,11 @@ def test_artifact_ref_round_trip_payload() -> None:
         ticker="AA",
         start_date="2024-01-01",
         end_date="2024-01-31",
+        requested_period="day",
+        bar_granularity="day",
+        as_of_date="2024-01-31",
+        effective_start_date="2024-01-31",
+        effective_end_date="2024-01-31",
         record_count=3,
     )
     assert ArtifactRef(**ref.to_payload()) == ref
@@ -74,3 +79,16 @@ def test_edgar_path_uses_request_date_suffix() -> None:
         suffix="edgar_20260407",
     )
     assert path == "source/edgar/AA/AA_edgar_20260407.json"
+
+
+def test_prices_path_uses_partitioned_layout_and_ndjson_extension() -> None:
+    path = build_object_path(
+        layer="source",
+        dataset="prices",
+        universe_key="mmh5r1",
+        ticker="AA",
+        suffix="wf-123",
+        bar_granularity="day",
+        effective_end_date="2024-01-31",
+    )
+    assert path == "source/prices/bar_granularity=day/effective_end_date=2024-01-31/ticker=AA/wf-123.ndjson"

@@ -64,11 +64,19 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
 - Fundamentals:  
   - Raw: `source/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
   - Prod: `prod/fundamentals/{TICKER}/{TICKER}_fundamentals_{start}_{end}.json`
-- Market daily artifacts are still stored under the existing `intraday` namespace for compatibility:
-  - Raw daily (eod layout): `source/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
-  - Prod daily (eod layout): `prod/intraday/{TICKER}/{TICKER}_eod_{start}_{end}.json`
+- Prices lake layout:
+  - Raw: `source/prices/bar_granularity=day/effective_end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
+  - Prod: `prod/prices/bar_granularity=day/effective_end_date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
 
-Dates use `YYYYMMDD`; tickers uppercase; freq lowercase. The worker reads `active.json` as the authoritative universe membership input, resolves identifiers only when needed, and persists metadata only when `metadata_only` or `metadata_mode=source` is requested. `universe_key` is required for full-universe, EDGAR, or metadata runs, but explicit-ticker intraday/fundamentals runs can omit it. For non-EDGAR intraday/fundamentals runs, `active.json` is used only for ticker expansion, not as an implicit RIC override.
+The worker reads `active.json` as the authoritative universe membership input,
+resolves identifiers only when needed, and persists metadata only when
+`metadata_only` or `metadata_mode=source` is requested. `universe_key` is
+required for full-universe, EDGAR, or metadata runs, but explicit-ticker
+prices/fundamentals runs can omit it. For non-EDGAR prices/fundamentals runs,
+`active.json` is used only for ticker expansion, not as an implicit RIC
+override. Price rows are stored as NDJSON and include `requested_period`,
+`as_of_date`, `effective_start_date`, `effective_end_date`, and
+`bar_granularity=day` for BigQuery ingestion.
 
 ## Run the worker
 
@@ -97,22 +105,20 @@ Run these from the sibling `client/` directory while the worker is running:
 ```bash
 python3 client.py \
   --tickers AA \
-  --start-date 2026-04-01 \
-  --end-date 2026-04-01 \
   --fundamentals-mode none \
-  --intraday-mode none \
+  --market-mode none \
   --metadata-only
 ```
 
-- Persist metadata alongside intraday:
+- Persist metadata alongside prices:
 
 ```bash
 python3 client.py \
   --tickers AA \
-  --start-date 2026-04-01 \
-  --end-date 2026-04-01 \
+  --as-of-date 2026-04-02 \
   --fundamentals-mode none \
-  --intraday-mode raw \
+  --market-mode raw \
+  --period month \
   --metadata-mode source
 ```
 
@@ -121,10 +127,8 @@ python3 client.py \
 ```bash
 python3 client.py \
   --tickers AA \
-  --start-date 2026-04-01 \
-  --end-date 2026-04-01 \
   --fundamentals-mode none \
-  --intraday-mode none \
+  --market-mode none \
   --edgar-only
 ```
 
@@ -136,7 +140,7 @@ python3 client.py \
   --start-date 2026-01-01 \
   --end-date 2026-03-31 \
   --fundamentals-mode raw \
-  --intraday-mode none
+  --market-mode none
 ```
 
 - Fundamentals production only:
@@ -147,43 +151,42 @@ python3 client.py \
   --start-date 2026-01-01 \
   --end-date 2026-03-31 \
   --fundamentals-mode prod \
-  --intraday-mode none
+  --market-mode none
 ```
 
-- Market daily raw only:
+- Prices raw only:
 
 ```bash
 python3 client.py \
   --tickers AA \
-  --start-date 2026-04-02 \
-  --end-date 2026-04-02 \
+  --as-of-date 2026-04-02 \
   --fundamentals-mode none \
-  --intraday-mode raw \
-  --intraday-frequency eod
+  --market-mode raw \
+  --period week
 ```
 
-- Market daily production only:
+- Prices production only:
 
 ```bash
 python3 client.py \
   --tickers AA \
-  --start-date 2026-04-02 \
-  --end-date 2026-04-02 \
+  --as-of-date 2026-04-02 \
   --fundamentals-mode none \
-  --intraday-mode prod \
-  --intraday-frequency daily
+  --market-mode prod \
+  --period quarter
 ```
 
-- Full run (fundamentals prod + market daily prod):
+- Full run (fundamentals prod + prices prod):
 
 ```bash
 python3 client.py \
   --tickers AA,NUE \
   --start-date 2026-01-01 \
   --end-date 2026-03-31 \
+  --as-of-date 2026-04-02 \
   --fundamentals-mode prod \
-  --intraday-mode prod \
-  --intraday-frequency daily \
+  --market-mode prod \
+  --period month \
   --edgar-source
 ```
 
@@ -345,7 +348,7 @@ TEMPORAL_WORKFLOW=MarketDataWorkflow
 Inputs to pass per run (query/body → function args):
 
 ```text
-tickers,start_date,end_date,intraday_frequency,fundamentals_mode,intraday_mode,metadata_mode,edgar_source,metadata_only,edgar_only,workflow_id,request_id
+tickers,start_date,end_date,as_of_date,period,fundamentals_mode,market_mode,metadata_mode,edgar_source,metadata_only,edgar_only,workflow_id,request_id
 ```
 
 See the sibling client project's `README.md` for local CLI usage and examples.
@@ -360,11 +363,11 @@ Functions.
 - Metadata persistence → write per-ticker source artifacts + one manifest only for `--metadata-only` or `--metadata-mode source`
 - EDGAR submissions → per ticker raw SEC submissions uploaded under `source/edgar/` when `--edgar-source/--edgar-only`
 - Fundamentals path: raw → prod unless `--fundamentals-mode none` or `--edgar-only`
-- Market daily path: raw → prod unless `--intraday-mode none` or `--edgar-only`
-- `intraday_frequency` accepts `daily` or `eod` only; `eod` is normalized to `daily` for the Marketio API
-- `fundamentals_mode=stage` and non-daily market frequencies are rejected as invalid requests
+- Prices path: raw → prod unless `--market-mode none` or `--edgar-only`
+- `period` accepts `day|week|month|quarter`; the worker resolves effective tradable dates from `as_of_date` with `pandas_market_calendars` and still fetches daily-grain rows from Marketio
+- `fundamentals_mode=stage` is rejected as an invalid request
 - Market daily raw retries once locally when the API returns a 200 with unusable empty-field payloads, then falls back to Temporal activity retries if the response remains empty
-- Uploads JSON artifacts with metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `universe_key`, `layer`, `ticker`, `window`).
+- Uploads fundamentals/metadata as JSON and prices as NDJSON, with execution metadata in GCS object metadata (`request_id`, `workflow_id`, `workflow_run_id`, `universe_key`, `layer`, `ticker`, `requested_period`, `effective_start_date`, `effective_end_date`).
 
 ## Activities
 
@@ -374,4 +377,4 @@ Functions.
 - `persist_company_metadata`: Upload normalized per-ticker metadata artifacts and a run manifest under `source/metadata/`.
 - `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under `source/edgar/`.
 - `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw` and `/api/v2/fundamentals/production`.
-- `fetch_intraday_raw` / `fetch_intraday_prod`: Pull market daily data from `/api/v2/market/daily/raw` and `/api/v2/market/daily/production`, while preserving the existing `intraday` storage layout.
+- `fetch_prices_raw` / `fetch_prices_prod`: Pull market daily data from `/api/v2/market/daily/raw` and `/api/v2/market/daily/production`, resolve requested tradable windows from `period` + `as_of_date`, and write NDJSON lake artifacts under `source/prices/` and `prod/prices/`.

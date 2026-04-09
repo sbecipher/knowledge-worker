@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import date as date_cls, timedelta
 from typing import Any, Dict, List
 
 from temporalio import workflow
@@ -7,7 +7,7 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ApplicationError
 
 from models import (
-    DEFAULT_INTRADAY_FREQUENCY,
+    DEFAULT_PERIOD,
     ExecutionMetadata,
     MarketDataRequest,
 )
@@ -22,8 +22,8 @@ FETCH_EDGAR_SOURCE = "fetch_edgar_source"
 FETCH_FUNDAMENTALS_RAW = "fetch_fundamentals_raw"
 FETCH_FUNDAMENTALS_STAGE = "fetch_fundamentals_stage"
 FETCH_FUNDAMENTALS_PROD = "fetch_fundamentals_prod"
-FETCH_INTRADAY_RAW = "fetch_intraday_raw"
-FETCH_INTRADAY_PROD = "fetch_intraday_prod"
+FETCH_PRICES_RAW = "fetch_prices_raw"
+FETCH_PRICES_PROD = "fetch_prices_prod"
 
 SHORT_RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=5),
@@ -77,12 +77,6 @@ def _validate_request(request: MarketDataRequest) -> None:
             type="InvalidRequest",
             non_retryable=True,
         )
-    if request.intraday_frequency != DEFAULT_INTRADAY_FREQUENCY:
-        raise ApplicationError(
-            "intraday_frequency must be one of: daily, eod",
-            type="InvalidRequest",
-            non_retryable=True,
-        )
     if request.fundamentals_mode == "stage":
         raise ApplicationError(
             "fundamentals_mode='stage' is no longer supported by the Marketio API",
@@ -95,9 +89,67 @@ def _validate_request(request: MarketDataRequest) -> None:
             type="InvalidRequest",
             non_retryable=True,
         )
-    if request.intraday_mode not in {"none", "raw", "prod"}:
+    if request.market_mode not in {"none", "raw", "prod"}:
         raise ApplicationError(
-            f"Unsupported intraday_mode: {request.intraday_mode}",
+            f"Unsupported market_mode: {request.market_mode}",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
+    if request.period not in {"day", "week", "month", "quarter"}:
+        raise ApplicationError(
+            f"Unsupported period: {request.period}",
+            type="InvalidRequest",
+            non_retryable=True,
+        )
+    if request.fundamentals_mode != "none":
+        if not request.start_date or not request.end_date:
+            raise ApplicationError(
+                "start_date and end_date are required when fundamentals_mode is not none",
+                type="InvalidRequest",
+                non_retryable=True,
+            )
+        try:
+            start_value = date_cls.fromisoformat(request.start_date)
+            end_value = date_cls.fromisoformat(request.end_date)
+        except ValueError as exc:
+            raise ApplicationError(
+                "start_date and end_date must be YYYY-MM-DD",
+                type="InvalidRequest",
+                non_retryable=True,
+            ) from exc
+        if start_value > end_value:
+            raise ApplicationError(
+                "start_date must be on or before end_date",
+                type="InvalidRequest",
+                non_retryable=True,
+            )
+    if request.market_mode != "none":
+        if not request.as_of_date:
+            raise ApplicationError(
+                "as_of_date is required when market_mode is not none",
+                type="InvalidRequest",
+                non_retryable=True,
+            )
+        try:
+            date_cls.fromisoformat(request.as_of_date)
+        except ValueError as exc:
+            raise ApplicationError(
+                "as_of_date must be YYYY-MM-DD",
+                type="InvalidRequest",
+                non_retryable=True,
+            ) from exc
+
+
+def _reject_legacy_payload_fields(request_payload: Dict[str, Any]) -> None:
+    legacy_fields = [
+        field
+        for field in ("intraday_mode", "intraday_frequency")
+        if field in request_payload
+    ]
+    if legacy_fields:
+        raise ApplicationError(
+            "Legacy fields are no longer supported: intraday_mode, intraday_frequency. "
+            "Use market_mode, period, and as_of_date instead.",
             type="InvalidRequest",
             non_retryable=True,
         )
@@ -107,6 +159,7 @@ def _validate_request(request: MarketDataRequest) -> None:
 class MarketDataWorkflow:
     @workflow.run
     async def run(self, request_payload: Dict[str, Any]) -> Dict[str, Any]:
+        _reject_legacy_payload_fields(request_payload)
         request = MarketDataRequest.from_payload(request_payload)
         _validate_request(request)
 
@@ -129,6 +182,7 @@ class MarketDataWorkflow:
         workflow_tickers = list(request.tickers)
         ticker_ciks: Dict[str, str] = {}
         ticker_rics: Dict[str, str] = {}
+        ticker_exchange_codes: Dict[str, str] = {}
         active_index: Dict[str, Any] = {}
         identifier_resolution: Dict[str, Any] = {}
         metadata_refs_by_ticker: Dict[str, List[dict]] = {}
@@ -157,6 +211,13 @@ class MarketDataWorkflow:
                     for ticker in active_index.get("tickers", [])
                     if str(ticker).strip()
                 ]
+                exchange_codes = active_index.get("exchange_codes") or {}
+                if isinstance(exchange_codes, dict):
+                    ticker_exchange_codes = {
+                        str(ticker).upper(): str(exchange_code).strip().upper()
+                        for ticker, exchange_code in exchange_codes.items()
+                        if ticker and exchange_code
+                    }
                 results["identifiers"]["active_source_uri"] = active_index.get("active_source_uri")
                 results["identifiers"]["active_source_object_path"] = active_index.get("active_source_object_path")
 
@@ -236,8 +297,8 @@ class MarketDataWorkflow:
                 "fundamentals_raw": [],
                 "fundamentals_stage": [],
                 "fundamentals_prod": [],
-                "intraday_raw": [],
-                "intraday_prod": [],
+                "prices_raw": [],
+                "prices_prod": [],
             }
             metadata_source = metadata_refs_by_ticker.get(ticker.upper())
             if metadata_source:
@@ -251,13 +312,14 @@ class MarketDataWorkflow:
 
         do_edgar = request.edgar_only or request.edgar_source
         do_fundamentals = request.fundamentals_mode in {"raw", "prod"} and not request.edgar_only
-        do_intraday = request.intraday_mode in {"raw", "prod"} and not request.edgar_only
+        do_market = request.market_mode in {"raw", "prod"} and not request.edgar_only
 
         async def process_ticker(ticker: str) -> Dict[str, Any]:
             ticker_results = _base_ticker_result(ticker)
             edgar_kwargs: Dict[str, List[str]] = {}
             cik_value = ticker_ciks.get(ticker.upper())
             ric_value = ticker_rics.get(ticker.upper())
+            exchange_code = ticker_exchange_codes.get(ticker.upper())
             if cik_value:
                 edgar_kwargs["ciks"] = [cik_value]
             else:
@@ -313,31 +375,30 @@ class MarketDataWorkflow:
             ticker_results["fundamentals_stage"] = fundamentals_stage
             ticker_results["fundamentals_prod"] = fundamentals_prod
 
-            intraday_raw = (
+            prices_raw = (
                 await workflow.execute_activity(
-                    FETCH_INTRADAY_RAW,
+                    FETCH_PRICES_RAW,
                     args=[
                         ticker,
                         ric_value,
-                        request.start_date,
-                        request.end_date,
-                        request.intraday_frequency,
+                        request.as_of_date,
+                        request.period,
+                        exchange_code,
                         request.universe_key,
                         execution_payload,
                     ],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
                 )
-                if do_intraday
+                if do_market
                 else []
             )
 
-            if request.intraday_mode == "prod" and do_intraday:
-                intraday_prod = await workflow.execute_activity(
-                    FETCH_INTRADAY_PROD,
+            if request.market_mode == "prod" and do_market:
+                prices_prod = await workflow.execute_activity(
+                    FETCH_PRICES_PROD,
                     args=[
-                        intraday_raw,
-                        request.intraday_frequency,
+                        prices_raw,
                         request.universe_key,
                         execution_payload,
                     ],
@@ -345,10 +406,10 @@ class MarketDataWorkflow:
                     retry_policy=LONG_RETRY,
                 )
             else:
-                intraday_prod = []
+                prices_prod = []
 
-            ticker_results["intraday_raw"] = intraday_raw
-            ticker_results["intraday_prod"] = intraday_prod
+            ticker_results["prices_raw"] = prices_raw
+            ticker_results["prices_prod"] = prices_prod
             return ticker_results
 
         semaphore = asyncio.Semaphore(request.max_concurrent_tickers)

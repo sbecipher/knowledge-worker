@@ -2,7 +2,7 @@ import pytest
 from temporalio.exceptions import ApplicationError
 
 from models import MarketDataRequest
-from workflows import _validate_request
+from workflows import _reject_legacy_payload_fields, _validate_request
 
 
 def test_validate_request_rejects_conflicting_modes() -> None:
@@ -26,7 +26,7 @@ def test_validate_request_allows_missing_universe_key_for_explicit_ticker_non_me
         start_date="2024-01-01",
         end_date="2024-01-31",
         fundamentals_mode="raw",
-        intraday_mode="none",
+        market_mode="none",
     )
     _validate_request(request)
 
@@ -38,7 +38,7 @@ def test_validate_request_requires_universe_key_for_full_universe_run() -> None:
         start_date="2024-01-01",
         end_date="2024-01-31",
         fundamentals_mode="raw",
-        intraday_mode="none",
+        market_mode="none",
     )
     with pytest.raises(
         ApplicationError,
@@ -72,7 +72,7 @@ def test_validate_request_requires_universe_key_for_metadata_persistence() -> No
         end_date="2024-01-31",
         metadata_mode="source",
         fundamentals_mode="none",
-        intraday_mode="none",
+        market_mode="none",
     )
     with pytest.raises(
         ApplicationError,
@@ -82,28 +82,41 @@ def test_validate_request_requires_universe_key_for_metadata_persistence() -> No
     assert exc_info.value.non_retryable is True
 
 
-def test_market_data_request_normalizes_eod_frequency() -> None:
+def test_market_data_request_defaults_day_period() -> None:
     request = MarketDataRequest.from_payload(
         {
             "universe_key": "mmh5r1",
             "tickers": ["AA"],
-            "start_date": "2024-01-01",
-            "end_date": "2024-01-31",
-            "intraday_frequency": "eod",
+            "as_of_date": "2024-01-31",
+            "period": "day",
+            "fundamentals_mode": "none",
         }
     )
-    assert request.intraday_frequency == "daily"
+    assert request.period == "day"
 
 
-def test_validate_request_rejects_non_daily_intraday_frequency() -> None:
+def test_validate_request_rejects_unknown_period() -> None:
     request = MarketDataRequest(
         universe_key="mmh5r1",
         tickers=["AA"],
-        start_date="2024-01-01",
-        end_date="2024-01-31",
-        intraday_frequency="weekly",
+        fundamentals_mode="none",
+        as_of_date="2024-01-31",
+        period="year",
     )
-    with pytest.raises(ApplicationError, match="intraday_frequency must be one of: daily, eod") as exc_info:
+    with pytest.raises(ApplicationError, match="Unsupported period") as exc_info:
+        _validate_request(request)
+    assert exc_info.value.non_retryable is True
+
+
+def test_validate_request_requires_as_of_date_for_market_runs() -> None:
+    request = MarketDataRequest(
+        universe_key="mmh5r1",
+        tickers=["AA"],
+        fundamentals_mode="none",
+        market_mode="raw",
+        as_of_date=None,
+    )
+    with pytest.raises(ApplicationError, match="as_of_date is required when market_mode is not none") as exc_info:
         _validate_request(request)
     assert exc_info.value.non_retryable is True
 
@@ -131,4 +144,10 @@ def test_validate_request_rejects_removed_fundamentals_stage_mode() -> None:
     )
     with pytest.raises(ApplicationError, match="fundamentals_mode='stage' is no longer supported") as exc_info:
         _validate_request(request)
+    assert exc_info.value.non_retryable is True
+
+
+def test_reject_legacy_payload_fields_rejects_intraday_fields() -> None:
+    with pytest.raises(ApplicationError, match="Legacy fields are no longer supported") as exc_info:
+        _reject_legacy_payload_fields({"tickers": ["AA"], "intraday_mode": "raw"})
     assert exc_info.value.non_retryable is True
