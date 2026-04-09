@@ -1,7 +1,7 @@
 from models import ArtifactRef
 from storage_utils import (
     build_active_universe_object_path,
-    build_metadata_manifest_object_path,
+    build_manifest_object_path,
     build_object_path,
 )
 
@@ -27,12 +27,23 @@ def test_metadata_source_path_uses_ticker_and_workflow_id() -> None:
         universe_key="mmh5r1",
         ticker="AA",
         suffix="wf-123",
+        end_date="2026-04-09",
     )
-    assert path == "source/metadata/AA/AA_wf-123.json"
+    assert path == "source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"
 
 
-def test_metadata_manifest_path_uses_workflow_id() -> None:
-    assert build_metadata_manifest_object_path("wf-123") == "source/metadata/manifests/wf-123.json"
+def test_source_manifest_path_uses_workflow_id() -> None:
+    assert (
+        build_manifest_object_path("source", "wf-123", end_date="2026-04-09")
+        == "source/manifests/end_date=2026-04-09/wf-123.json"
+    )
+
+
+def test_prod_manifest_path_uses_workflow_id() -> None:
+    assert (
+        build_manifest_object_path("prod", "wf-123", end_date="2026-06-30")
+        == "prod/manifests/end_date=2026-06-30/wf-123.json"
+    )
 
 
 def test_artifact_ref_round_trip_payload() -> None:
@@ -78,9 +89,10 @@ def test_edgar_path_uses_request_date_suffix() -> None:
         dataset="edgar",
         universe_key="mmh5r1",
         ticker="AA",
-        suffix="edgar_20260407",
+        suffix="wf-123",
+        end_date="2026-04-09",
     )
-    assert path == "source/edgar/AA/AA_edgar_20260407.json"
+    assert path == "source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json"
 
 
 def test_prices_path_uses_partitioned_layout_and_ndjson_extension() -> None:

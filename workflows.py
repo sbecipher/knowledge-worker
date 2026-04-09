@@ -18,6 +18,7 @@ CHECK_MARKETIO_HEALTH = "check_marketio_health"
 LOAD_ACTIVE_UNIVERSE_INDEX = "load_active_universe_index"
 RESOLVE_COMPANY_IDENTIFIERS = "resolve_company_identifiers"
 PERSIST_COMPANY_METADATA = "persist_company_metadata"
+PERSIST_LAYER_MANIFESTS = "persist_layer_manifests"
 FETCH_EDGAR_SOURCE = "fetch_edgar_source"
 FETCH_FUNDAMENTALS_RAW = "fetch_fundamentals_raw"
 FETCH_FUNDAMENTALS_STAGE = "fetch_fundamentals_stage"
@@ -196,6 +197,10 @@ class MarketDataWorkflow:
                 "active_source_uri": None,
                 "active_source_object_path": None,
             },
+            "manifests": {
+                "source": [],
+                "prod": [],
+            },
         }
 
         if not workflow_tickers:
@@ -286,8 +291,6 @@ class MarketDataWorkflow:
                         if isinstance(artifacts, list)
                     }
                 results["metadata"] = {
-                    "manifest_uri": metadata_summary.get("manifest_uri"),
-                    "manifest_object_path": metadata_summary.get("manifest_object_path"),
                     "persisted_tickers": list(metadata_summary.get("persisted_tickers") or []),
                 }
 
@@ -305,9 +308,52 @@ class MarketDataWorkflow:
                 payload["metadata_source"] = metadata_source
             return payload
 
+        def _collect_artifact_refs() -> List[dict]:
+            artifact_refs: List[dict] = []
+            artifact_fields = (
+                "metadata_source",
+                "edgar_source",
+                "fundamentals_raw",
+                "fundamentals_stage",
+                "fundamentals_prod",
+                "prices_raw",
+                "prices_prod",
+            )
+            for ticker in workflow_tickers:
+                ticker_payload = results.get(ticker)
+                if not isinstance(ticker_payload, dict):
+                    continue
+                for field in artifact_fields:
+                    artifacts = ticker_payload.get(field)
+                    if not isinstance(artifacts, list):
+                        continue
+                    artifact_refs.extend(
+                        artifact
+                        for artifact in artifacts
+                        if isinstance(artifact, dict)
+                    )
+            return artifact_refs
+
+        async def _persist_workflow_manifests() -> None:
+            artifact_refs = _collect_artifact_refs()
+            if not artifact_refs:
+                return
+            manifest_summary = await workflow.execute_activity(
+                PERSIST_LAYER_MANIFESTS,
+                args=[artifact_refs, request.universe_key, execution_payload],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=LONG_RETRY,
+            )
+            if isinstance(manifest_summary, dict):
+                results["manifests"] = {
+                    "source": list(manifest_summary.get("source") or []),
+                    "prod": list(manifest_summary.get("prod") or []),
+                }
+
         if request.metadata_only:
             for ticker in workflow_tickers:
                 results[ticker] = _base_ticker_result(ticker)
+            await _persist_workflow_manifests()
             return results
 
         do_edgar = request.edgar_only or request.edgar_source
@@ -427,4 +473,5 @@ class MarketDataWorkflow:
                 results[ticker] = base_result
             else:
                 results[ticker] = output
+        await _persist_workflow_manifests()
         return results

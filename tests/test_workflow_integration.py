@@ -13,9 +13,19 @@ from workflows import MarketDataWorkflow
 
 
 def _artifact_ref(ticker: str, dataset: str, layer: str, count: int = 1) -> Dict[str, Any]:
+    if dataset == "metadata":
+        object_path = f"{layer}/metadata/end_date=2026-04-09/ticker={ticker}/artifact.json"
+    elif dataset == "edgar":
+        object_path = f"{layer}/edgar/end_date=2026-04-09/ticker={ticker}/artifact.json"
+    elif dataset == "fundamentals":
+        object_path = f"{layer}/fundamentals/frequency=FQ/end_date=2024-01-31/ticker={ticker}/artifact.ndjson"
+    elif dataset == "prices":
+        object_path = f"{layer}/prices/granularity=day/end_date=2024-01-31/ticker={ticker}/artifact.ndjson"
+    else:
+        object_path = f"{layer}/{dataset}/{ticker}/artifact.json"
     return {
-        "uri": f"gs://bucket/{layer}/{dataset}/{ticker}/artifact.json",
-        "object_path": f"{layer}/{dataset}/{ticker}/artifact.json",
+        "uri": f"gs://bucket/{object_path}",
+        "object_path": object_path,
         "layer": layer,
         "dataset": dataset,
         "universe_key": "mmh5r1",
@@ -24,9 +34,38 @@ def _artifact_ref(ticker: str, dataset: str, layer: str, count: int = 1) -> Dict
         "workflow_run_id": "run-123",
         "ticker": ticker,
         "start_date": "2024-01-01",
-        "end_date": "2024-01-31",
+        "end_date": "2026-04-09" if dataset in {"metadata", "edgar"} else "2024-01-31",
         "record_count": count,
     }
+
+
+def _manifest_summary(layer: str, end_date: str, artifact_count: int, datasets: List[str]) -> Dict[str, Any]:
+    return {
+        "end_date": end_date,
+        "manifest_uri": f"gs://bucket/{layer}/manifests/end_date={end_date}/wf-123.json",
+        "manifest_object_path": f"{layer}/manifests/end_date={end_date}/wf-123.json",
+        "artifact_count": artifact_count,
+        "datasets": datasets,
+    }
+
+
+def _persist_layer_manifests_activity(
+    response: Dict[str, List[Dict[str, Any]]],
+    captured: Dict[str, Any] | None = None,
+) -> Callable[..., Any]:
+    @activity.defn(name="persist_layer_manifests")
+    def persist_layer_manifests(
+        artifacts: List[Dict[str, Any]],
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        if captured is not None:
+            captured["artifacts"] = artifacts
+            captured["universe_key"] = universe_key
+            captured["execution"] = execution
+        return response
+
+    return persist_layer_manifests
 
 
 async def _run_workflow(
@@ -64,6 +103,8 @@ async def _run_workflow(
 
 
 def test_metadata_only_workflow_persists_metadata_only() -> None:
+    captured: Dict[str, Any] = {}
+
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
@@ -95,11 +136,17 @@ def test_metadata_only_workflow_persists_metadata_only() -> None:
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
-            "manifest_uri": "gs://bucket/source/metadata/manifests/wf-123.json",
-            "manifest_object_path": "source/metadata/manifests/wf-123.json",
             "persisted_tickers": ["AA"],
             "artifacts_by_ticker": {"AA": [_artifact_ref("AA", "metadata", "source")]},
         }
+
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [_manifest_summary("source", "2026-04-09", 1, ["metadata"])],
+            "prod": [],
+        },
+        captured,
+    )
 
     result = asyncio.run(
         _run_workflow(
@@ -111,14 +158,17 @@ def test_metadata_only_workflow_persists_metadata_only() -> None:
                 "metadata_only": True,
                 "request_id": "req-metadata",
             },
-            [check_marketio_health, resolve_company_identifiers, persist_company_metadata],
+            [check_marketio_health, resolve_company_identifiers, persist_company_metadata, persist_layer_manifests],
         )
     )
 
     assert result["request_id"] == "req-metadata"
-    assert result["metadata"]["manifest_object_path"] == "source/metadata/manifests/wf-123.json"
+    assert result["metadata"]["persisted_tickers"] == ["AA"]
+    assert result["manifests"]["source"] == [_manifest_summary("source", "2026-04-09", 1, ["metadata"])]
+    assert result["manifests"]["prod"] == []
     assert result["AA"]["metadata_source"][0]["dataset"] == "metadata"
     assert result["AA"]["prices_raw"] == []
+    assert [artifact["dataset"] for artifact in captured["artifacts"]] == ["metadata"]
 
 
 def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() -> None:
@@ -158,6 +208,13 @@ def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() 
         captured["ciks"] = ciks
         return [_artifact_ref("AA", "edgar", "source")]
 
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [_manifest_summary("source", "2026-04-09", 1, ["edgar"])],
+            "prod": [],
+        }
+    )
+
     result = asyncio.run(
         _run_workflow(
             {
@@ -168,7 +225,7 @@ def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() 
                 "edgar_only": True,
                 "request_id": "req-edgar",
             },
-            [check_marketio_health, resolve_company_identifiers, fetch_edgar_source],
+            [check_marketio_health, resolve_company_identifiers, fetch_edgar_source, persist_layer_manifests],
         )
     )
 
@@ -177,6 +234,8 @@ def test_edgar_only_workflow_resolves_identifiers_without_persisting_metadata() 
     assert captured["ciks"] == ["0000123456"]
     assert result["identifiers"]["ciks"] == {"AA": "0000123456"}
     assert result["AA"]["edgar_source"][0]["dataset"] == "edgar"
+    assert result["manifests"]["source"] == [_manifest_summary("source", "2026-04-09", 1, ["edgar"])]
+    assert result["manifests"]["prod"] == []
 
 
 def test_prices_only_explicit_ticker_skips_identifier_resolution() -> None:
@@ -202,6 +261,13 @@ def test_prices_only_explicit_ticker_skips_identifier_resolution() -> None:
         ref["ric"] = ric
         return [ref]
 
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [_manifest_summary("source", "2024-01-31", 1, ["prices"])],
+            "prod": [],
+        }
+    )
+
     result = asyncio.run(
         _run_workflow(
             {
@@ -212,7 +278,7 @@ def test_prices_only_explicit_ticker_skips_identifier_resolution() -> None:
                 "market_mode": "raw",
                 "request_id": "req-prices-only",
             },
-            [check_marketio_health, fetch_prices_raw],
+            [check_marketio_health, fetch_prices_raw, persist_layer_manifests],
         )
     )
 
@@ -220,6 +286,7 @@ def test_prices_only_explicit_ticker_skips_identifier_resolution() -> None:
     assert captured["ric"] is None
     assert result["AA"]["prices_raw"][0]["ticker"] == "AA"
     assert result["identifiers"]["ciks"] == {}
+    assert result["manifests"]["source"] == [_manifest_summary("source", "2024-01-31", 1, ["prices"])]
 
 
 def test_prices_only_explicit_ticker_can_omit_universe_key() -> None:
@@ -244,6 +311,13 @@ def test_prices_only_explicit_ticker_can_omit_universe_key() -> None:
         ref = _artifact_ref(ticker, "prices", "source")
         return [ref]
 
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [_manifest_summary("source", "2024-01-31", 1, ["prices"])],
+            "prod": [],
+        }
+    )
+
     result = asyncio.run(
         _run_workflow(
             {
@@ -253,13 +327,14 @@ def test_prices_only_explicit_ticker_can_omit_universe_key() -> None:
                 "market_mode": "raw",
                 "request_id": "req-prices-no-universe",
             },
-            [check_marketio_health, fetch_prices_raw],
+            [check_marketio_health, fetch_prices_raw, persist_layer_manifests],
         )
     )
 
     assert captured["ticker"] == "AA"
     assert captured["universe_key"] is None
     assert result["AA"]["prices_raw"][0]["ticker"] == "AA"
+    assert result["manifests"]["source"] == [_manifest_summary("source", "2024-01-31", 1, ["prices"])]
 
 
 def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only() -> None:
@@ -299,6 +374,13 @@ def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only(
         ref["primary_ric"] = ric
         return [ref]
 
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [_manifest_summary("source", "2024-01-31", 1, ["fundamentals"])],
+            "prod": [],
+        }
+    )
+
     result = asyncio.run(
         _run_workflow(
             {
@@ -310,7 +392,7 @@ def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only(
                 "market_mode": "none",
                 "request_id": "req-full-universe",
             },
-            [check_marketio_health, load_active_universe_index, fetch_fundamentals_raw],
+            [check_marketio_health, load_active_universe_index, fetch_fundamentals_raw, persist_layer_manifests],
         )
     )
 
@@ -319,6 +401,7 @@ def test_full_universe_non_edgar_uses_active_universe_for_ticker_expansion_only(
     assert result["identifiers"]["active_source_object_path"] == "prod/models/mmh5r1/active.json"
     assert result["identifiers"]["rics"] == {}
     assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
+    assert result["manifests"]["source"] == [_manifest_summary("source", "2024-01-31", 1, ["fundamentals"])]
 
 
 def test_combined_metadata_source_and_prices_reuses_identifier_resolution() -> None:
@@ -354,8 +437,6 @@ def test_combined_metadata_source_and_prices_reuses_identifier_resolution() -> N
         execution: Dict[str, Any],
     ) -> Dict[str, Any]:
         return {
-            "manifest_uri": "gs://bucket/source/metadata/manifests/wf-123.json",
-            "manifest_object_path": "source/metadata/manifests/wf-123.json",
             "persisted_tickers": ["AA"],
             "artifacts_by_ticker": {"AA": [_artifact_ref("AA", "metadata", "source")]},
         }
@@ -376,6 +457,16 @@ def test_combined_metadata_source_and_prices_reuses_identifier_resolution() -> N
         ref["primary_ric"] = ric
         return [ref]
 
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [
+                _manifest_summary("source", "2024-01-31", 1, ["prices"]),
+                _manifest_summary("source", "2026-04-09", 1, ["metadata"]),
+            ],
+            "prod": [],
+        }
+    )
+
     result = asyncio.run(
         _run_workflow(
             {
@@ -387,7 +478,13 @@ def test_combined_metadata_source_and_prices_reuses_identifier_resolution() -> N
                 "metadata_mode": "source",
                 "request_id": "req-combined",
             },
-            [check_marketio_health, resolve_company_identifiers, persist_company_metadata, fetch_prices_raw],
+            [
+                check_marketio_health,
+                resolve_company_identifiers,
+                persist_company_metadata,
+                fetch_prices_raw,
+                persist_layer_manifests,
+            ],
         )
     )
 
@@ -396,6 +493,11 @@ def test_combined_metadata_source_and_prices_reuses_identifier_resolution() -> N
     assert result["metadata"]["persisted_tickers"] == ["AA"]
     assert result["AA"]["metadata_source"][0]["dataset"] == "metadata"
     assert result["AA"]["prices_raw"][0]["ric"] == "AA.N"
+    assert result["manifests"]["source"] == [
+        _manifest_summary("source", "2024-01-31", 1, ["prices"]),
+        _manifest_summary("source", "2026-04-09", 1, ["metadata"]),
+    ]
+    assert result["manifests"]["prod"] == []
 
 
 def test_partial_failure_isolated_per_ticker() -> None:
@@ -417,6 +519,13 @@ def test_partial_failure_isolated_per_ticker() -> None:
         ref = _artifact_ref(ticker, "fundamentals", "source")
         return [ref]
 
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [_manifest_summary("source", "2024-01-31", 1, ["fundamentals"])],
+            "prod": [],
+        }
+    )
+
     result = asyncio.run(
         _run_workflow(
             {
@@ -428,16 +537,19 @@ def test_partial_failure_isolated_per_ticker() -> None:
                 "market_mode": "none",
                 "request_id": "req-partial",
             },
-            [check_marketio_health, fetch_fundamentals_raw],
+            [check_marketio_health, fetch_fundamentals_raw, persist_layer_manifests],
         )
     )
 
     assert result["AA"]["fundamentals_raw"][0]["ticker"] == "AA"
     assert result["NUE"]["error"]["type"] == "ApplicationError"
     assert result["NUE"]["fundamentals_raw"] == []
+    assert result["manifests"]["source"] == [_manifest_summary("source", "2024-01-31", 1, ["fundamentals"])]
 
 
 def test_workflow_keeps_multiple_fundamentals_refs_per_ticker() -> None:
+    captured: Dict[str, Any] = {}
+
     @activity.defn(name="check_marketio_health")
     def check_marketio_health(execution: Dict[str, Any]) -> None:
         return None
@@ -459,6 +571,17 @@ def test_workflow_keeps_multiple_fundamentals_refs_per_ticker() -> None:
         second["end_date"] = "2026-06-30"
         return [first, second]
 
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [
+                _manifest_summary("source", "2026-03-31", 1, ["fundamentals"]),
+                _manifest_summary("source", "2026-06-30", 1, ["fundamentals"]),
+            ],
+            "prod": [],
+        },
+        captured,
+    )
+
     result = asyncio.run(
         _run_workflow(
             {
@@ -470,8 +593,103 @@ def test_workflow_keeps_multiple_fundamentals_refs_per_ticker() -> None:
                 "market_mode": "none",
                 "request_id": "req-fundamentals-multi",
             },
-            [check_marketio_health, fetch_fundamentals_raw],
+            [check_marketio_health, fetch_fundamentals_raw, persist_layer_manifests],
         )
     )
 
     assert [ref["end_date"] for ref in result["AA"]["fundamentals_raw"]] == ["2026-03-31", "2026-06-30"]
+    assert result["manifests"]["source"] == [
+        _manifest_summary("source", "2026-03-31", 1, ["fundamentals"]),
+        _manifest_summary("source", "2026-06-30", 1, ["fundamentals"]),
+    ]
+    assert [artifact["end_date"] for artifact in captured["artifacts"]] == ["2026-03-31", "2026-06-30"]
+
+
+def test_full_run_emits_source_and_prod_manifests() -> None:
+    @activity.defn(name="check_marketio_health")
+    def check_marketio_health(execution: Dict[str, Any]) -> None:
+        return None
+
+    @activity.defn(name="fetch_fundamentals_raw")
+    def fetch_fundamentals_raw(
+        ticker: str,
+        ric: str,
+        start_date: str,
+        end_date: str,
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        ref = _artifact_ref(ticker, "fundamentals", "source")
+        ref["end_date"] = "2024-01-31"
+        return [ref]
+
+    @activity.defn(name="fetch_fundamentals_prod")
+    def fetch_fundamentals_prod(
+        source_refs: List[Dict[str, Any]],
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        ref = _artifact_ref("AA", "fundamentals", "prod")
+        ref["end_date"] = "2024-01-31"
+        return [ref]
+
+    @activity.defn(name="fetch_prices_raw")
+    def fetch_prices_raw(
+        ticker: str,
+        ric: str,
+        as_of_date: str,
+        period: str,
+        exchange_code: str,
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        ref = _artifact_ref(ticker, "prices", "source")
+        ref["end_date"] = "2024-01-31"
+        return [ref]
+
+    @activity.defn(name="fetch_prices_prod")
+    def fetch_prices_prod(
+        source_refs: List[Dict[str, Any]],
+        universe_key: str,
+        execution: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        ref = _artifact_ref("AA", "prices", "prod")
+        ref["end_date"] = "2024-01-31"
+        return [ref]
+
+    persist_layer_manifests = _persist_layer_manifests_activity(
+        {
+            "source": [_manifest_summary("source", "2024-01-31", 2, ["fundamentals", "prices"])],
+            "prod": [_manifest_summary("prod", "2024-01-31", 2, ["fundamentals", "prices"])],
+        }
+    )
+
+    result = asyncio.run(
+        _run_workflow(
+            {
+                "universe_key": "mmh5r1",
+                "tickers": ["AA"],
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-31",
+                "as_of_date": "2024-01-31",
+                "fundamentals_mode": "prod",
+                "market_mode": "prod",
+                "request_id": "req-full-run",
+            },
+            [
+                check_marketio_health,
+                fetch_fundamentals_raw,
+                fetch_fundamentals_prod,
+                fetch_prices_raw,
+                fetch_prices_prod,
+                persist_layer_manifests,
+            ],
+        )
+    )
+
+    assert result["manifests"]["source"] == [_manifest_summary("source", "2024-01-31", 2, ["fundamentals", "prices"])]
+    assert result["manifests"]["prod"] == [_manifest_summary("prod", "2024-01-31", 2, ["fundamentals", "prices"])]
+    assert result["AA"]["fundamentals_raw"][0]["layer"] == "source"
+    assert result["AA"]["fundamentals_prod"][0]["layer"] == "prod"
+    assert result["AA"]["prices_raw"][0]["layer"] == "source"
+    assert result["AA"]["prices_prod"][0]["layer"] == "prod"

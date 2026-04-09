@@ -124,16 +124,19 @@ def test_resolve_company_identifiers_can_skip_metadata_rows_when_not_persisting(
     assert result["rows_by_ticker"] == {}
 
 
-def test_persist_company_metadata_writes_per_ticker_artifacts_and_manifest(
+def test_persist_company_metadata_writes_per_ticker_artifact_without_manifest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     uploaded_paths: List[str] = []
+    uploaded_metadata: Dict[str, Dict[str, Any]] = {}
 
     def fake_upload(local_path, object_path, metadata=None):
         uploaded_paths.append(object_path)
+        uploaded_metadata[object_path] = dict(metadata or {})
         return f"gs://bucket/{object_path}"
 
     monkeypatch.setattr(activities.UPLOADER, "upload_file", fake_upload)
+    monkeypatch.setattr(activities, "_current_end_date", lambda: "2026-04-09")
 
     result = activities.persist_company_metadata(
         {
@@ -164,12 +167,214 @@ def test_persist_company_metadata_writes_per_ticker_artifacts_and_manifest(
     )
 
     assert result["persisted_tickers"] == ["AA"]
-    assert result["artifacts_by_ticker"]["AA"][0]["object_path"] == "source/metadata/AA/AA_wf-123.json"
-    assert result["manifest_object_path"] == "source/metadata/manifests/wf-123.json"
-    assert uploaded_paths == [
-        "source/metadata/AA/AA_wf-123.json",
-        "source/metadata/manifests/wf-123.json",
+    assert (
+        result["artifacts_by_ticker"]["AA"][0]["object_path"]
+        == "source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"
+    )
+    assert result["artifacts_by_ticker"]["AA"][0]["end_date"] == "2026-04-09"
+    assert result["artifacts_by_ticker"]["AA"][0]["active_source_object_path"] == "prod/models/mmh5r1/active.json"
+    assert "manifest_object_path" not in result
+    assert "manifest_uri" not in result
+    assert uploaded_paths == ["source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"]
+    assert uploaded_metadata["source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"]["end_date"] == "20260409"
+    assert (
+        uploaded_metadata["source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"]["active_source_object_path"]
+        == "prod/models/mmh5r1/active.json"
+    )
+
+
+def test_persist_layer_manifests_groups_by_layer_and_end_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uploaded_paths: List[str] = []
+    uploaded_payloads: Dict[str, Dict[str, Any]] = {}
+    uploaded_metadata: Dict[str, Dict[str, Any]] = {}
+
+    def fake_upload(local_path, object_path, metadata=None):
+        uploaded_paths.append(object_path)
+        uploaded_metadata[object_path] = dict(metadata or {})
+        uploaded_payloads[object_path] = json.loads(Path(local_path).read_text())
+        return f"gs://bucket/{object_path}"
+
+    monkeypatch.setattr(activities.UPLOADER, "upload_file", fake_upload)
+
+    artifacts = [
+        {
+            "uri": "gs://bucket/source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json",
+            "object_path": "source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json",
+            "layer": "source",
+            "dataset": "metadata",
+            "universe_key": "mmh5r1",
+            "request_id": "req-123",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "ticker": "AA",
+            "end_date": "2026-04-09",
+            "record_count": 1,
+        },
+        {
+            "uri": "gs://bucket/source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json",
+            "object_path": "source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json",
+            "layer": "source",
+            "dataset": "edgar",
+            "universe_key": "mmh5r1",
+            "request_id": "req-123",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "ticker": "AA",
+            "end_date": "2026-04-09",
+            "record_count": 1,
+        },
+        {
+            "uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "object_path": "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "layer": "source",
+            "dataset": "fundamentals",
+            "universe_key": "mmh5r1",
+            "request_id": "req-123",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "ticker": "AA",
+            "end_date": "2026-03-31",
+            "record_count": 2,
+        },
+        {
+            "uri": "gs://bucket/prod/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "object_path": "prod/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "layer": "prod",
+            "dataset": "fundamentals",
+            "universe_key": "mmh5r1",
+            "request_id": "req-123",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "ticker": "AA",
+            "end_date": "2026-03-31",
+            "record_count": 2,
+        },
     ]
+
+    result = activities.persist_layer_manifests(
+        artifacts=artifacts,
+        universe_key="mmh5r1",
+        execution=_execution_payload(),
+    )
+
+    assert result == {
+        "source": [
+            {
+                "end_date": "2026-03-31",
+                "manifest_uri": "gs://bucket/source/manifests/end_date=2026-03-31/wf-123.json",
+                "manifest_object_path": "source/manifests/end_date=2026-03-31/wf-123.json",
+                "artifact_count": 1,
+                "datasets": ["fundamentals"],
+            },
+            {
+                "end_date": "2026-04-09",
+                "manifest_uri": "gs://bucket/source/manifests/end_date=2026-04-09/wf-123.json",
+                "manifest_object_path": "source/manifests/end_date=2026-04-09/wf-123.json",
+                "artifact_count": 2,
+                "datasets": ["edgar", "metadata"],
+            },
+        ],
+        "prod": [
+            {
+                "end_date": "2026-03-31",
+                "manifest_uri": "gs://bucket/prod/manifests/end_date=2026-03-31/wf-123.json",
+                "manifest_object_path": "prod/manifests/end_date=2026-03-31/wf-123.json",
+                "artifact_count": 1,
+                "datasets": ["fundamentals"],
+            }
+        ],
+    }
+    assert uploaded_paths == [
+        "prod/manifests/end_date=2026-03-31/wf-123.json",
+        "source/manifests/end_date=2026-03-31/wf-123.json",
+        "source/manifests/end_date=2026-04-09/wf-123.json",
+    ]
+    assert uploaded_payloads["source/manifests/end_date=2026-04-09/wf-123.json"] == {
+        "request_id": "req-123",
+        "workflow_id": "wf-123",
+        "workflow_run_id": "run-123",
+        "universe_key": "mmh5r1",
+        "layer": "source",
+        "end_date": "2026-04-09",
+        "artifact_count": 2,
+        "datasets": ["edgar", "metadata"],
+        "artifacts": [
+            artifacts[1],
+            artifacts[0],
+        ],
+    }
+    assert uploaded_metadata["source/manifests/end_date=2026-04-09/wf-123.json"]["datasets"] == "edgar,metadata"
+    assert uploaded_metadata["prod/manifests/end_date=2026-03-31/wf-123.json"]["dataset"] == "manifest"
+
+
+def test_fetch_companies_metadata_returns_consolidated_manifests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        activities,
+        "resolve_company_identifiers",
+        lambda tickers, universe_key, include_metadata_rows, execution: {
+            "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
+            "active_source_object_path": "prod/models/mmh5r1/active.json",
+            "tickers": ["AA"],
+            "ciks": {"AA": "0001675149"},
+            "rics": {"AA": "AA.N"},
+            "rows_by_ticker": {"AA": {"ticker": "AA"}},
+            "missing_from_active": [],
+            "missing_from_provider": [],
+            "request_id": "req-123",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "universe_key": "mmh5r1",
+        },
+    )
+    monkeypatch.setattr(
+        activities,
+        "persist_company_metadata",
+        lambda identifier_resolution, universe_key, execution: {
+            "persisted_tickers": ["AA"],
+            "artifacts_by_ticker": {"AA": [{"layer": "source", "dataset": "metadata", "end_date": "2026-04-09"}]},
+            "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
+            "active_source_object_path": "prod/models/mmh5r1/active.json",
+            "ciks": {"AA": "0001675149"},
+            "rics": {"AA": "AA.N"},
+            "missing_from_active": [],
+            "missing_from_provider": [],
+            "tickers": ["AA"],
+            "request_id": "req-123",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "universe_key": "mmh5r1",
+        },
+    )
+    monkeypatch.setattr(
+        activities,
+        "persist_layer_manifests",
+        lambda artifacts, universe_key, execution: {
+            "source": [
+                {
+                    "end_date": "2026-04-09",
+                    "manifest_uri": "gs://bucket/source/manifests/end_date=2026-04-09/wf-123.json",
+                    "manifest_object_path": "source/manifests/end_date=2026-04-09/wf-123.json",
+                    "artifact_count": 1,
+                    "datasets": ["metadata"],
+                }
+            ],
+            "prod": [],
+        },
+    )
+
+    result = activities.fetch_companies_metadata(
+        tickers=["AA"],
+        universe_key="mmh5r1",
+        execution=_execution_payload(),
+    )
+
+    assert result["manifests"]["source"][0]["manifest_object_path"] == "source/manifests/end_date=2026-04-09/wf-123.json"
+    assert result["manifests"]["prod"] == []
+    assert result["persisted_tickers"] == ["AA"]
 
 
 def test_resolve_market_window_day_uses_last_completed_session() -> None:
@@ -315,15 +520,20 @@ def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) 
         }
 
     monkeypatch.setattr(activities, "_post_json", fake_post)
+    monkeypatch.setattr(activities, "_current_end_date", lambda: "2026-04-09")
 
     result = activities.fetch_edgar_source(
         tickers=["AA"],
+        universe_key="mmh5r1",
         execution=_execution_payload(),
     )
 
     assert captured_calls == [(activities.MARKETIO_ROUTE_EDGAR_RAW, {"ticker": "AA"})]
     assert result[0]["record_count"] == 2
     assert result[0]["dataset"] == "edgar"
+    assert result[0]["end_date"] == "2026-04-09"
+    assert result[0]["object_path"] == "source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json"
+    assert result[0]["active_source_object_path"] == "prod/models/mmh5r1/active.json"
 
 
 def test_fetch_fundamentals_raw_partitions_source_rows_by_period_end_date(

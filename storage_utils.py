@@ -127,12 +127,43 @@ def build_object_path(
         )
         return str(PurePosixPath(*parts))
 
+    if dataset == "metadata" and end_date:
+        if not ticker:
+            raise ValueError("ticker required for metadata path")
+        if not suffix:
+            raise ValueError("suffix required for metadata path")
+        safe_ticker = sanitize_path_segment(ticker.upper())
+        parts.extend(
+            [
+                "metadata",
+                f"end_date={format_iso_date(end_date)}",
+                f"ticker={safe_ticker}",
+                f"{sanitize_path_segment(suffix)}.json",
+            ]
+        )
+        return str(PurePosixPath(*parts))
+
     parts.append(dataset)
     if ticker:
         safe_ticker = sanitize_path_segment(ticker.upper())
         parts.append(safe_ticker)
     else:
         safe_ticker = ""
+
+    if dataset == "edgar" and end_date:
+        if not ticker:
+            raise ValueError("ticker required for edgar path")
+        if not suffix:
+            raise ValueError("suffix required for edgar path")
+        parts = [p for p in [prefix, layer, "edgar"] if p]
+        parts.extend(
+            [
+                f"end_date={format_iso_date(end_date)}",
+                f"ticker={safe_ticker}",
+                f"{sanitize_path_segment(suffix)}.json",
+            ]
+        )
+        return str(PurePosixPath(*parts))
 
     if dataset == "edgar":
         filename_parts = []
@@ -168,10 +199,19 @@ def build_active_universe_object_path(universe_key: str, prefix: str = "") -> st
     return str(PurePosixPath(*parts))
 
 
-def build_metadata_manifest_object_path(workflow_id: str, prefix: str = "") -> str:
+def build_manifest_object_path(
+    layer: str,
+    workflow_id: str,
+    prefix: str = "",
+    end_date: Optional[str] = None,
+) -> str:
+    if not layer:
+        raise ValueError("layer required for manifest path")
     if not workflow_id:
-        raise ValueError("workflow_id required for metadata manifest path")
-    parts = [p for p in [prefix, "source", "metadata", "manifests"] if p]
+        raise ValueError("workflow_id required for manifest path")
+    parts = [p for p in [prefix, sanitize_path_segment(layer.lower()), "manifests"] if p]
+    if end_date:
+        parts.append(f"end_date={format_iso_date(end_date)}")
     parts.append(f"{sanitize_path_segment(workflow_id)}.json")
     return str(PurePosixPath(*parts))
 

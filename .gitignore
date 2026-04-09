@@ -10,6 +10,7 @@ ENV/
 .pytest_cache/
 .coverage
 tmp/
+tmp-tests/
 *.log
 *.sqlite3
 *.db

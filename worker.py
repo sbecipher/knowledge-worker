@@ -18,6 +18,7 @@ from activities import (
     fetch_prices_prod,
     fetch_prices_raw,
     load_active_universe_index,
+    persist_layer_manifests,
     persist_company_metadata,
     resolve_company_identifiers,
 )
@@ -79,6 +80,7 @@ async def main() -> None:
             load_active_universe_index,
             resolve_company_identifiers,
             persist_company_metadata,
+            persist_layer_manifests,
             fetch_companies_metadata,
             fetch_edgar_source,
             fetch_fundamentals_raw,

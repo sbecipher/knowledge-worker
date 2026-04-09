@@ -103,6 +103,8 @@ class ArtifactRef:
     cik_number: Optional[str] = None
     field_count: Optional[int] = None
     page_count: Optional[int] = None
+    active_source_uri: Optional[str] = None
+    active_source_object_path: Optional[str] = None
     source_uri: Optional[str] = None
     source_object_path: Optional[str] = None
     source_dataset: Optional[str] = None

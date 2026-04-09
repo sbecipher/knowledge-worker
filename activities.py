@@ -20,7 +20,7 @@ from models import ArtifactRef, ExecutionMetadata
 from storage_utils import (
     GCSUploader,
     build_active_universe_object_path,
-    build_metadata_manifest_object_path,
+    build_manifest_object_path,
     build_object_path,
     ensure_dir,
     format_date,
@@ -176,10 +176,120 @@ def _metadata_base(
     return meta
 
 
+def _current_end_date() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _active_source_lineage(universe_key: Optional[str]) -> Dict[str, str]:
+    explicit_universe_key = _optional_str(universe_key)
+    if explicit_universe_key is None:
+        return {}
+    object_path = build_active_universe_object_path(_resolve_universe_key(explicit_universe_key), prefix=SETTINGS.gcs_prefix)
+    return {
+        "active_source_uri": _object_uri(object_path),
+        "active_source_object_path": object_path,
+    }
+
+
 def _object_uri(object_path: str) -> str:
     if UPLOADER.bucket_name:
         return f"gs://{UPLOADER.bucket_name}/{object_path}"
     return object_path
+
+
+def _manifest_summary_payload(
+    *,
+    end_date: str,
+    manifest_uri: str,
+    manifest_object_path: str,
+    artifact_count: int,
+    datasets: List[str],
+) -> Dict[str, Any]:
+    return {
+        "end_date": end_date,
+        "manifest_uri": manifest_uri,
+        "manifest_object_path": manifest_object_path,
+        "artifact_count": artifact_count,
+        "datasets": datasets,
+    }
+
+
+def _validated_manifest_artifact(
+    artifact: Dict[str, Any],
+    *,
+    execution: ExecutionMetadata,
+    universe_key: str,
+) -> Dict[str, Any]:
+    if not isinstance(artifact, dict):
+        raise _non_retryable("Manifest artifact payload must be a dict", type_name="ArtifactValidationError")
+    layer = _optional_str(artifact.get("layer"))
+    if layer not in {"source", "prod"}:
+        raise _non_retryable(
+            f"Manifest artifact layer must be source or prod: {artifact}",
+            type_name="ArtifactValidationError",
+        )
+    dataset = _optional_str(artifact.get("dataset"))
+    if not dataset:
+        raise _non_retryable(
+            f"Manifest artifact dataset is required: {artifact}",
+            type_name="ArtifactValidationError",
+        )
+    object_path = _optional_str(artifact.get("object_path"))
+    if not object_path:
+        raise _non_retryable(
+            f"Manifest artifact object_path is required: {artifact}",
+            type_name="ArtifactValidationError",
+        )
+    uri = _optional_str(artifact.get("uri"))
+    if not uri:
+        raise _non_retryable(
+            f"Manifest artifact uri is required: {artifact}",
+            type_name="ArtifactValidationError",
+        )
+    end_date = _optional_iso_date(artifact.get("end_date"))
+    if not end_date:
+        raise _non_retryable(
+            f"Manifest artifact end_date is required: {artifact}",
+            type_name="ArtifactValidationError",
+        )
+    artifact_request_id = _optional_str(artifact.get("request_id"))
+    artifact_workflow_id = _optional_str(artifact.get("workflow_id"))
+    artifact_workflow_run_id = _optional_str(artifact.get("workflow_run_id"))
+    artifact_universe_key = _optional_str(artifact.get("universe_key"))
+    expected_fields = {
+        "request_id": execution.request_id,
+        "workflow_id": execution.workflow_id,
+        "workflow_run_id": execution.workflow_run_id,
+        "universe_key": universe_key,
+    }
+    actual_fields = {
+        "request_id": artifact_request_id,
+        "workflow_id": artifact_workflow_id,
+        "workflow_run_id": artifact_workflow_run_id,
+        "universe_key": artifact_universe_key,
+    }
+    for field_name, expected_value in expected_fields.items():
+        actual_value = actual_fields[field_name]
+        if actual_value and actual_value != expected_value:
+            raise _non_retryable(
+                f"Manifest artifact {field_name} mismatch: expected {expected_value}, got {actual_value}",
+                type_name="ArtifactValidationError",
+            )
+
+    normalized = dict(artifact)
+    normalized["layer"] = layer
+    normalized["dataset"] = dataset
+    normalized["uri"] = uri
+    normalized["object_path"] = object_path
+    normalized["end_date"] = end_date
+    normalized["request_id"] = execution.request_id
+    normalized["workflow_id"] = execution.workflow_id
+    normalized["workflow_run_id"] = execution.workflow_run_id
+    normalized["universe_key"] = universe_key
+    ticker = _optional_str(normalized.get("ticker"))
+    if ticker:
+        normalized["ticker"] = ticker.upper()
+    return normalized
 
 
 def _normalized_ticker_list(tickers: Optional[List[str]]) -> List[str]:
@@ -1287,7 +1397,7 @@ def _save_artifacts(
         end_date = artifact.get("end_date")
         filename_suffix: Optional[str] = None
         if dataset == "edgar":
-            filename_suffix = f"edgar_{date.today().strftime('%Y%m%d')}"
+            filename_suffix = execution.workflow_id if end_date else f"edgar_{date.today().strftime('%Y%m%d')}"
         object_path = build_object_path(
             layer=layer,
             dataset=dataset,
@@ -1318,6 +1428,7 @@ def _save_artifacts(
             meta["provider"] = provider
         source = str(artifact.get("source") or "").strip()
         if source:
+            meta["source"] = source
             meta["source_provider"] = source
         ric = _preferred_ric(artifact.get("ric"))
         if ric:
@@ -1354,6 +1465,12 @@ def _save_artifacts(
         page_count = artifact.get("page_count")
         if page_count is not None:
             meta["page_count"] = str(page_count)
+        active_source_uri = _optional_str(artifact.get("active_source_uri"))
+        if active_source_uri:
+            meta["active_source_uri"] = active_source_uri
+        active_source_object_path = _optional_str(artifact.get("active_source_object_path"))
+        if active_source_object_path:
+            meta["active_source_object_path"] = active_source_object_path
         company_id = artifact.get("company_id") or artifact.get("id")
         if company_id:
             meta["company_id"] = str(company_id)
@@ -1385,6 +1502,8 @@ def _save_artifacts(
             cik_number=cik_number or None,
             field_count=int(field_count) if isinstance(field_count, int) else None,
             page_count=int(page_count) if isinstance(page_count, int) else None,
+            active_source_uri=active_source_uri,
+            active_source_object_path=active_source_object_path,
             source_uri=source_uri,
             source_object_path=source_object_path,
             source_dataset=source_dataset,
@@ -1580,12 +1699,15 @@ def persist_company_metadata(
         raise _non_retryable("Identifier resolution payload must be a dict", type_name="ArtifactValidationError")
 
     resolved_universe_key = _resolve_universe_key(universe_key or identifier_resolution.get("universe_key"))
+    metadata_end_date = _current_end_date()
     rows_by_ticker = identifier_resolution.get("rows_by_ticker")
     if not isinstance(rows_by_ticker, dict) or not rows_by_ticker:
         raise _non_retryable(
             "No normalized metadata rows provided for persistence",
             type_name="ArtifactValidationError",
         )
+    active_source_uri = _optional_str(identifier_resolution.get("active_source_uri"))
+    active_source_object_path = _optional_str(identifier_resolution.get("active_source_object_path"))
 
     artifacts_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
     persisted_tickers: List[str] = []
@@ -1593,26 +1715,37 @@ def persist_company_metadata(
         row = rows_by_ticker.get(ticker)
         if not isinstance(row, dict):
             continue
+        persisted_row = dict(row)
+        persisted_row["end_date"] = metadata_end_date
+        if active_source_uri:
+            persisted_row["active_source_uri"] = active_source_uri
+        if active_source_object_path:
+            persisted_row["active_source_object_path"] = active_source_object_path
         object_path = build_object_path(
             layer="source",
             dataset="metadata",
             universe_key=resolved_universe_key,
             ticker=ticker,
             suffix=execution_meta.workflow_id,
+            end_date=metadata_end_date,
             prefix=SETTINGS.gcs_prefix,
         )
         local_path = _temp_path(object_path)
-        write_json(local_path, row)
+        write_json(local_path, persisted_row)
         metadata = _metadata_base(
             "source",
             "metadata",
             execution_meta,
             ticker,
             None,
-            None,
+            metadata_end_date,
             None,
             universe_key=resolved_universe_key,
         )
+        if active_source_uri:
+            metadata["active_source_uri"] = active_source_uri
+        if active_source_object_path:
+            metadata["active_source_object_path"] = active_source_object_path
         for key in ("provider", "source", "ric", "primary_ric", "cik_number", "organization_id"):
             value = row.get(key)
             if value is not None:
@@ -1636,6 +1769,9 @@ def persist_company_metadata(
             primary_ric=_optional_str(row.get("primary_ric")),
             organization_id=_optional_str(row.get("organization_id")),
             cik_number=_optional_str(row.get("cik_number")),
+            end_date=metadata_end_date,
+            active_source_uri=active_source_uri,
+            active_source_object_path=active_source_object_path,
         )
         if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
             local_path.unlink(missing_ok=True)
@@ -1648,53 +1784,8 @@ def persist_company_metadata(
             uri,
             object_path,
         )
-
-    manifest_payload = {
-        "request_id": execution_meta.request_id,
-        "workflow_id": execution_meta.workflow_id,
-        "workflow_run_id": execution_meta.workflow_run_id,
-        "universe_key": resolved_universe_key,
-        "active_source_uri": identifier_resolution.get("active_source_uri"),
-        "active_source_object_path": identifier_resolution.get("active_source_object_path"),
-        "tickers": identifier_resolution.get("tickers") or persisted_tickers,
-        "persisted_tickers": persisted_tickers,
-        "ciks": identifier_resolution.get("ciks") or {},
-        "rics": identifier_resolution.get("rics") or {},
-        "missing_from_active": identifier_resolution.get("missing_from_active") or [],
-        "missing_from_provider": identifier_resolution.get("missing_from_provider") or [],
-        "artifacts_by_ticker": artifacts_by_ticker,
-    }
-    manifest_object_path = build_metadata_manifest_object_path(
-        execution_meta.workflow_id,
-        prefix=SETTINGS.gcs_prefix,
-    )
-    manifest_local_path = _temp_path(manifest_object_path)
-    write_json(manifest_local_path, manifest_payload)
-    manifest_metadata = _metadata_base(
-        "source",
-        "metadata_manifest",
-        execution_meta,
-        None,
-        None,
-        None,
-        None,
-        universe_key=resolved_universe_key,
-    )
-    manifest_uri = UPLOADER.upload_file(manifest_local_path, manifest_object_path, metadata=manifest_metadata)
-    if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
-        manifest_local_path.unlink(missing_ok=True)
-
-    logger.info(
-        "%s metadata_manifest_saved uri=%s object_path=%s persisted_tickers=%s",
-        _log_prefix(execution_meta, "metadata_manifest"),
-        manifest_uri,
-        manifest_object_path,
-        len(persisted_tickers),
-    )
     _activity_heartbeat({"count": len(persisted_tickers)})
     return {
-        "manifest_uri": manifest_uri,
-        "manifest_object_path": manifest_object_path,
         "persisted_tickers": persisted_tickers,
         "artifacts_by_ticker": artifacts_by_ticker,
         "active_source_uri": identifier_resolution.get("active_source_uri"),
@@ -1709,6 +1800,99 @@ def persist_company_metadata(
         "workflow_run_id": execution_meta.workflow_run_id,
         "universe_key": resolved_universe_key,
     }
+
+
+@activity.defn(name="persist_layer_manifests")
+def persist_layer_manifests(
+    artifacts: List[Dict[str, Any]],
+    universe_key: Optional[str] = None,
+    execution: Optional[Dict[str, Any]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    if _activity_is_cancelled():
+        raise RuntimeError("persist_layer_manifests cancelled")
+    execution_meta = _execution_metadata_from_payload(execution)
+    if not isinstance(artifacts, list):
+        raise _non_retryable("Manifest artifacts payload must be a list", type_name="ArtifactValidationError")
+    resolved_universe_key = _resolve_universe_key(universe_key)
+    manifests: Dict[str, List[Dict[str, Any]]] = {"source": [], "prod": []}
+    if not artifacts:
+        return manifests
+
+    grouped_artifacts: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+    for artifact in artifacts:
+        normalized = _validated_manifest_artifact(
+            artifact,
+            execution=execution_meta,
+            universe_key=resolved_universe_key,
+        )
+        group_key = (str(normalized["layer"]), str(normalized["end_date"]))
+        grouped_artifacts.setdefault(group_key, []).append(normalized)
+
+    manifest_count = 0
+    for (layer, end_date), grouped_payload in sorted(grouped_artifacts.items()):
+        ordered_artifacts = sorted(
+            grouped_payload,
+            key=lambda artifact: (
+                str(artifact.get("dataset") or ""),
+                str(artifact.get("ticker") or ""),
+                str(artifact.get("object_path") or ""),
+            ),
+        )
+        datasets = sorted({str(artifact["dataset"]) for artifact in ordered_artifacts})
+        manifest_payload = {
+            "request_id": execution_meta.request_id,
+            "workflow_id": execution_meta.workflow_id,
+            "workflow_run_id": execution_meta.workflow_run_id,
+            "universe_key": resolved_universe_key,
+            "layer": layer,
+            "end_date": end_date,
+            "artifact_count": len(ordered_artifacts),
+            "datasets": datasets,
+            "artifacts": ordered_artifacts,
+        }
+        manifest_object_path = build_manifest_object_path(
+            layer=layer,
+            workflow_id=execution_meta.workflow_id,
+            prefix=SETTINGS.gcs_prefix,
+            end_date=end_date,
+        )
+        manifest_local_path = _temp_path(manifest_object_path)
+        write_json(manifest_local_path, manifest_payload)
+        manifest_metadata = _metadata_base(
+            layer,
+            "manifest",
+            execution_meta,
+            None,
+            None,
+            end_date,
+            None,
+            universe_key=resolved_universe_key,
+        )
+        manifest_metadata["artifact_count"] = str(len(ordered_artifacts))
+        manifest_metadata["datasets"] = ",".join(datasets)
+        manifest_uri = UPLOADER.upload_file(manifest_local_path, manifest_object_path, metadata=manifest_metadata)
+        if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
+            manifest_local_path.unlink(missing_ok=True)
+        manifests[layer].append(
+            _manifest_summary_payload(
+                end_date=end_date,
+                manifest_uri=manifest_uri,
+                manifest_object_path=manifest_object_path,
+                artifact_count=len(ordered_artifacts),
+                datasets=datasets,
+            )
+        )
+        manifest_count += 1
+        logger.info(
+            "%s manifest_saved uri=%s object_path=%s artifact_count=%s",
+            _log_prefix(execution_meta, f"{layer}_manifest"),
+            manifest_uri,
+            manifest_object_path,
+            len(ordered_artifacts),
+        )
+
+    _activity_heartbeat({"count": manifest_count})
+    return manifests
 
 
 @activity.defn(name="fetch_companies_metadata")
@@ -1731,9 +1915,17 @@ def fetch_companies_metadata(
         universe_key=universe_key,
         execution=execution,
     )
+    artifacts: List[Dict[str, Any]] = []
+    for artifact_group in persisted.get("artifacts_by_ticker", {}).values():
+        if isinstance(artifact_group, list):
+            artifacts.extend([artifact for artifact in artifact_group if isinstance(artifact, dict)])
+    manifests = persist_layer_manifests(
+        artifacts=artifacts,
+        universe_key=universe_key,
+        execution=execution,
+    )
     return {
-        "manifest_uri": persisted["manifest_uri"],
-        "manifest_object_path": persisted["manifest_object_path"],
+        "manifests": manifests,
         "active_source_uri": persisted["active_source_uri"],
         "active_source_object_path": persisted["active_source_object_path"],
         "record_count": len(persisted["persisted_tickers"]),
@@ -1741,6 +1933,7 @@ def fetch_companies_metadata(
         "rics": persisted["rics"],
         "tickers": persisted["tickers"],
         "persisted_tickers": persisted["persisted_tickers"],
+        "artifacts_by_ticker": persisted["artifacts_by_ticker"],
         "request_id": persisted["request_id"],
         "workflow_id": persisted["workflow_id"],
         "workflow_run_id": persisted["workflow_run_id"],
@@ -1767,6 +1960,8 @@ def fetch_edgar_source(
     if not requests:
         raise _non_retryable("At least one ticker or CIK must be provided", type_name="ArtifactValidationError")
 
+    edgar_end_date = _current_end_date()
+    active_source_lineage = _active_source_lineage(universe_key)
     payload: Any = requests[0] if len(requests) == 1 else requests
     raw_response = _post_json(MARKETIO_ROUTE_EDGAR_RAW, payload)
     responses: List[Any] = raw_response if isinstance(raw_response, list) else [raw_response]
@@ -1800,6 +1995,8 @@ def fetch_edgar_source(
 
         artifact["record_count"] = _recent_filings_count(artifact)
         artifact["requested_ticker"] = ticker_candidate
+        artifact["end_date"] = edgar_end_date
+        artifact.update(active_source_lineage)
         artifacts.append(artifact)
 
     _activity_heartbeat({"requested": len(requests), "received": len(artifacts)})
