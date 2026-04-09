@@ -74,7 +74,11 @@ resolves identifiers only when needed, and persists metadata only when
 required for full-universe, EDGAR, or metadata runs, but explicit-ticker
 prices/fundamentals runs can omit it. For non-EDGAR prices/fundamentals runs,
 `active.json` is used only for ticker expansion, not as an implicit RIC
-override. Price rows are stored as NDJSON and include `requested_period`,
+override. Price rows are stored as NDJSON and follow the current Marketio
+contracts: raw files repeat Marketio raw artifact metadata and store
+`date`/`instrument` plus a provider `fields` object, while prod files repeat
+artifact metadata and store `date`/`instrument` plus the canonical Marketio
+snake_case daily market fields. Both layouts include `requested_period`,
 `as_of_date`, `effective_start_date`, `effective_end_date`, and
 `bar_granularity=day` for BigQuery ingestion.
 

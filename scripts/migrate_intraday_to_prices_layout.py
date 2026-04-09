@@ -129,6 +129,51 @@ def _optional_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def _intrinio_legacy_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    close_value = _optional_float(row.get("close"))
+    change_value = _optional_float(row.get("change"))
+    percent_change_value = _optional_float(row.get("percent_change"))
+    dividend_value = _optional_float(row.get("dividend"))
+    fifty_two_week_high = _optional_float(row.get("fifty_two_week_high"))
+    fifty_two_week_low = _optional_float(row.get("fifty_two_week_low"))
+
+    prev_close: Optional[float] = None
+    if close_value is not None and change_value is not None:
+        prev_close = close_value - change_value
+
+    price_pct_chg_1d: Optional[float] = None
+    if percent_change_value is not None:
+        price_pct_chg_1d = percent_change_value * 100.0
+    elif prev_close not in (None, 0.0) and change_value is not None:
+        price_pct_chg_1d = (change_value / prev_close) * 100.0
+
+    total_return_1d: Optional[float] = None
+    if prev_close not in (None, 0.0) and close_value is not None:
+        total_return_1d = ((close_value + (dividend_value or 0.0) - prev_close) / prev_close) * 100.0
+
+    price_52wk_high_flg_1d: Optional[bool] = None
+    if close_value is not None and fifty_two_week_high is not None:
+        price_52wk_high_flg_1d = close_value >= fifty_two_week_high
+
+    price_52wk_low_flg_1d: Optional[bool] = None
+    if close_value is not None and fifty_two_week_low is not None:
+        price_52wk_low_flg_1d = close_value <= fifty_two_week_low
+
+    return {
+        "TR.OPENPRICE": _optional_float(row.get("open")),
+        "TR.CLOSEPRICE": close_value,
+        "TR.HIGHPRICE": _optional_float(row.get("high")),
+        "TR.LOWPRICE": _optional_float(row.get("low")),
+        "TR.VOLUME": _optional_float(row.get("volume")),
+        "TR.PRICE52WEEKHIGH": fifty_two_week_high,
+        "TR.PRICE52WEEKLOW": fifty_two_week_low,
+        "TR.PRICEPCTCHG1D": price_pct_chg_1d,
+        "TR.TOTALRETURN1D": total_return_1d,
+        "TR.PRICE52WKHIGHFLG1D": price_52wk_high_flg_1d,
+        "TR.PRICE52WKLOWFLG1D": price_52wk_low_flg_1d,
+    }
+
+
 def _price_row_base(
     *,
     ticker: str,
@@ -137,13 +182,10 @@ def _price_row_base(
     request_id: str,
     effective_start_date: str,
     effective_end_date: str,
-    security: Optional[Dict[str, Any]] = None,
     provider: Optional[str] = None,
 ) -> Dict[str, Any]:
-    security = security or {}
     return {
         "ticker": ticker,
-        "date": None,
         "requested_period": REQUESTED_PERIOD,
         "as_of_date": effective_end_date,
         "effective_start_date": effective_start_date,
@@ -153,36 +195,10 @@ def _price_row_base(
         "workflow_id": workflow_id,
         "workflow_run_id": workflow_id,
         "request_id": request_id,
-        "source_system": "marketio",
-        "provider": provider or "marketio",
-        "security_id": _optional_str(security.get("id")),
-        "company_id": _optional_str(security.get("company_id")),
-        "security_code": _optional_str(security.get("code")),
-        "security_name": _optional_str(security.get("name")),
-        "currency": _optional_str(security.get("currency")),
-        "composite_ticker": _optional_str(security.get("composite_ticker")),
-        "figi": _optional_str(security.get("figi")),
-        "composite_figi": _optional_str(security.get("composite_figi")),
-        "share_class_figi": _optional_str(security.get("share_class_figi")),
-        "primary_listing": _optional_bool(security.get("primary_listing")),
-        "open": None,
-        "high": None,
-        "low": None,
-        "close": None,
-        "volume": None,
-        "adj_open": None,
-        "adj_high": None,
-        "adj_low": None,
-        "adj_close": None,
-        "adj_volume": None,
-        "dividend": None,
-        "factor": None,
-        "split_ratio": None,
-        "intraperiod": None,
-        "change": None,
-        "percent_change": None,
-        "fifty_two_week_high": None,
-        "fifty_two_week_low": None,
+        "source_system": "legacy_intraday_migration",
+        "source": provider or "intrinio",
+        "provider": provider or "intrinio",
+        "frequency": "daily",
     }
 
 
@@ -214,40 +230,26 @@ def flatten_legacy_payload(
             request_id=workflow_id,
             effective_start_date=object_info.effective_start_date,
             effective_end_date=object_info.effective_end_date,
-            security=security,
-            provider=provider,
+            provider="intrinio" if provider == "marketio" else provider,
         )
         stock_prices = record.get("stock_prices")
         if isinstance(stock_prices, list):
+            instrument = _optional_str(
+                security.get("composite_ticker")
+                or security.get("ticker")
+                or security.get("figi")
+                or security.get("composite_figi")
+                or object_info.ticker
+            )
             for stock_price in stock_prices:
                 if not isinstance(stock_price, dict):
                     continue
                 row = dict(base)
-                row.update(
-                    {
-                        "date": _optional_str(stock_price.get("date")),
-                        "open": _optional_float(stock_price.get("open")),
-                        "high": _optional_float(stock_price.get("high")),
-                        "low": _optional_float(stock_price.get("low")),
-                        "close": _optional_float(stock_price.get("close")),
-                        "volume": _optional_float(stock_price.get("volume")),
-                        "adj_open": _optional_float(stock_price.get("adj_open")),
-                        "adj_high": _optional_float(stock_price.get("adj_high")),
-                        "adj_low": _optional_float(stock_price.get("adj_low")),
-                        "adj_close": _optional_float(stock_price.get("adj_close")),
-                        "adj_volume": _optional_float(stock_price.get("adj_volume")),
-                        "dividend": _optional_float(stock_price.get("dividend")),
-                        "factor": _optional_float(stock_price.get("factor")),
-                        "split_ratio": _optional_float(stock_price.get("split_ratio")),
-                        "intraperiod": _optional_bool(stock_price.get("intraperiod")),
-                        "change": _optional_float(stock_price.get("change")),
-                        "percent_change": _optional_float(stock_price.get("percent_change")),
-                        "fifty_two_week_high": _optional_float(stock_price.get("fifty_two_week_high")),
-                        "fifty_two_week_low": _optional_float(stock_price.get("fifty_two_week_low")),
-                        "legacy_object_path": object_info.object_path,
-                        "legacy_generation": object_info.generation,
-                    }
-                )
+                row["date"] = _optional_str(stock_price.get("date"))
+                row["instrument"] = instrument
+                row["fields"] = _intrinio_legacy_fields(stock_price)
+                row["legacy_object_path"] = object_info.object_path
+                row["legacy_generation"] = object_info.generation
                 rows.append(row)
             continue
 
@@ -257,33 +259,12 @@ def flatten_legacy_payload(
         for data_row in data_rows:
             if not isinstance(data_row, dict):
                 continue
-            fields = data_row.get("fields") if isinstance(data_row.get("fields"), dict) else {}
             row = dict(base)
-            row.update(
-                {
-                    "date": _optional_str(data_row.get("date")),
-                    "open": _optional_float(fields.get("TR.OPENPRICE")),
-                    "high": _optional_float(fields.get("TR.HIGHPRICE")),
-                    "low": _optional_float(fields.get("TR.LOWPRICE")),
-                    "close": _optional_float(fields.get("TR.CLOSEPRICE")),
-                    "volume": _optional_float(fields.get("TR.ACCUMULATEDVOLUME")),
-                    "adj_open": _optional_float(fields.get("TR.ADJOPENPRICE")),
-                    "adj_high": _optional_float(fields.get("TR.ADJHIGHPRICE")),
-                    "adj_low": _optional_float(fields.get("TR.ADJLOWPRICE")),
-                    "adj_close": _optional_float(fields.get("TR.ADJCLOSEPRICE")),
-                    "adj_volume": _optional_float(fields.get("TR.ADJVOLUME")),
-                    "dividend": _optional_float(data_row.get("dividend")),
-                    "factor": _optional_float(data_row.get("factor")),
-                    "split_ratio": _optional_float(data_row.get("split_ratio")),
-                    "intraperiod": _optional_bool(data_row.get("intraperiod")),
-                    "change": _optional_float(data_row.get("change")),
-                    "percent_change": _optional_float(data_row.get("percent_change")),
-                    "fifty_two_week_high": _optional_float(data_row.get("fifty_two_week_high")),
-                    "fifty_two_week_low": _optional_float(data_row.get("fifty_two_week_low")),
-                    "legacy_object_path": object_info.object_path,
-                    "legacy_generation": object_info.generation,
-                }
-            )
+            row["date"] = _optional_str(data_row.get("date"))
+            row["instrument"] = _optional_str(data_row.get("instrument")) or object_info.ticker
+            row["fields"] = dict(data_row.get("fields") or {}) if isinstance(data_row.get("fields"), dict) else {}
+            row["legacy_object_path"] = object_info.object_path
+            row["legacy_generation"] = object_info.generation
             rows.append(row)
     return rows
 

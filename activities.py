@@ -68,13 +68,6 @@ EXCHANGE_CALENDAR_MAP = {
     "NYQ": "XNYS",
     "NYS": "XNYS",
 }
-PRICE_FIELD_MAP = {
-    "TR.OPENPRICE": "open",
-    "TR.HIGHPRICE": "high",
-    "TR.LOWPRICE": "low",
-    "TR.CLOSEPRICE": "close",
-    "TR.ACCUMULATEDVOLUME": "volume",
-}
 
 
 def _non_retryable(message: str, type_name: str = "InvalidRequest") -> ApplicationError:
@@ -691,10 +684,8 @@ def _price_row_base(
     effective_start_date: str,
     effective_end_date: str,
 ) -> Dict[str, Any]:
-    security = artifact.get("security") if isinstance(artifact.get("security"), dict) else {}
-    return {
+    row = {
         "ticker": ticker,
-        "date": None,
         "requested_period": requested_period,
         "as_of_date": as_of_date,
         "effective_start_date": effective_start_date,
@@ -705,35 +696,41 @@ def _price_row_base(
         "workflow_run_id": execution.workflow_run_id,
         "request_id": execution.request_id,
         "source_system": "marketio",
-        "provider": _optional_str(artifact.get("provider")) or _optional_str(artifact.get("source")) or MARKETIO_MARKET_SOURCE_LSEG,
-        "security_id": _optional_str(_first_non_empty(security.get("id"), artifact.get("security_id"))),
-        "company_id": _optional_str(_first_non_empty(security.get("company_id"), artifact.get("company_id"))),
-        "security_code": _optional_str(_first_non_empty(security.get("code"), artifact.get("security_code"))),
-        "security_name": _optional_str(_first_non_empty(security.get("name"), artifact.get("security_name"))),
-        "currency": _optional_str(_first_non_empty(security.get("currency"), artifact.get("currency"))),
-        "composite_ticker": _optional_str(_first_non_empty(security.get("composite_ticker"), artifact.get("composite_ticker"))),
-        "figi": _optional_str(_first_non_empty(security.get("figi"), artifact.get("figi"))),
-        "composite_figi": _optional_str(_first_non_empty(security.get("composite_figi"), artifact.get("composite_figi"))),
-        "share_class_figi": _optional_str(_first_non_empty(security.get("share_class_figi"), artifact.get("share_class_figi"))),
-        "primary_listing": _optional_bool(_first_non_empty(security.get("primary_listing"), artifact.get("primary_listing"))),
-        "open": None,
-        "high": None,
-        "low": None,
-        "close": None,
-        "volume": None,
-        "adj_open": None,
-        "adj_high": None,
-        "adj_low": None,
-        "adj_close": None,
-        "adj_volume": None,
-        "dividend": None,
-        "factor": None,
-        "split_ratio": None,
-        "intraperiod": None,
-        "change": None,
-        "percent_change": None,
-        "fifty_two_week_high": None,
-        "fifty_two_week_low": None,
+    }
+    provider = _optional_str(artifact.get("provider")) or _optional_str(artifact.get("source")) or MARKETIO_MARKET_SOURCE_LSEG
+    row["provider"] = provider
+    frequency = _optional_str(artifact.get("frequency")) or MARKETIO_MARKET_FREQUENCY_DAILY
+    row["frequency"] = frequency
+    source = _optional_str(artifact.get("source"))
+    if source is not None:
+        row["source"] = source
+    for key in ("ric", "primary_ric", "cik_number", "organization_id"):
+        value = _optional_str(artifact.get(key))
+        if value is not None:
+            row[key] = value
+    return row
+
+
+def _legacy_stock_price_fields(raw_row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "TR.OPENPRICE": _optional_float(raw_row.get("open")),
+        "TR.HIGHPRICE": _optional_float(raw_row.get("high")),
+        "TR.LOWPRICE": _optional_float(raw_row.get("low")),
+        "TR.CLOSEPRICE": _optional_float(raw_row.get("close")),
+        "TR.VOLUME": _optional_float(_first_non_empty(raw_row.get("volume"), raw_row.get("accumulated_volume"))),
+        "TR.ADJOPENPRICE": _optional_float(raw_row.get("adj_open")),
+        "TR.ADJHIGHPRICE": _optional_float(raw_row.get("adj_high")),
+        "TR.ADJLOWPRICE": _optional_float(raw_row.get("adj_low")),
+        "TR.ADJCLOSEPRICE": _optional_float(raw_row.get("adj_close")),
+        "TR.ADJVOLUME": _optional_float(raw_row.get("adj_volume")),
+        "TR.DIVIDENDYIELD": _optional_float(raw_row.get("dividend")),
+        "TR.FACTOR": _optional_float(raw_row.get("factor")),
+        "TR.SPLITRATIO": _optional_float(raw_row.get("split_ratio")),
+        "TR.CHANGEPCT": _optional_float(raw_row.get("percent_change")),
+        "TR.PRICEPCTCHG1D": _optional_float(raw_row.get("percent_change")),
+        "TR.PRICECHG": _optional_float(raw_row.get("change")),
+        "TR.PRICE52WEEKHIGH": _optional_float(raw_row.get("fifty_two_week_high")),
+        "TR.PRICE52WEEKLOW": _optional_float(raw_row.get("fifty_two_week_low")),
     }
 
 
@@ -762,61 +759,41 @@ def _flatten_price_rows(
     flattened_rows: List[Dict[str, Any]] = []
     stock_prices = artifact.get("stock_prices")
     if isinstance(stock_prices, list) and stock_prices:
+        instrument = _optional_str(
+            _first_non_empty(
+                artifact.get("instrument"),
+                artifact.get("ticker"),
+                artifact.get("primary_ric"),
+                artifact.get("ric"),
+            )
+        )
         for raw_row in stock_prices:
             if not isinstance(raw_row, dict):
                 continue
             row = dict(base)
-            row.update(
-                {
-                    "date": _optional_str(raw_row.get("date")),
-                    "open": _optional_float(raw_row.get("open")),
-                    "high": _optional_float(raw_row.get("high")),
-                    "low": _optional_float(raw_row.get("low")),
-                    "close": _optional_float(raw_row.get("close")),
-                    "volume": _optional_float(raw_row.get("volume")),
-                    "adj_open": _optional_float(raw_row.get("adj_open")),
-                    "adj_high": _optional_float(raw_row.get("adj_high")),
-                    "adj_low": _optional_float(raw_row.get("adj_low")),
-                    "adj_close": _optional_float(raw_row.get("adj_close")),
-                    "adj_volume": _optional_float(raw_row.get("adj_volume")),
-                    "dividend": _optional_float(raw_row.get("dividend")),
-                    "factor": _optional_float(raw_row.get("factor")),
-                    "split_ratio": _optional_float(raw_row.get("split_ratio")),
-                    "intraperiod": _optional_bool(raw_row.get("intraperiod")),
-                    "change": _optional_float(raw_row.get("change")),
-                    "percent_change": _optional_float(raw_row.get("percent_change")),
-                    "fifty_two_week_high": _optional_float(raw_row.get("fifty_two_week_high")),
-                    "fifty_two_week_low": _optional_float(raw_row.get("fifty_two_week_low")),
-                }
-            )
+            row["date"] = _optional_str(raw_row.get("date"))
+            row["instrument"] = instrument
+            row["fields"] = _legacy_stock_price_fields(raw_row)
             flattened_rows.append(row)
         return flattened_rows
 
+    raw_like = any(
+        isinstance(raw_row, dict) and isinstance(raw_row.get("fields"), dict)
+        for raw_row in (artifact.get("data") or [])
+    )
     for raw_row in artifact.get("data") or []:
         if not isinstance(raw_row, dict):
             continue
-        fields = raw_row.get("fields") if isinstance(raw_row.get("fields"), dict) else {}
         row = dict(base)
         row["date"] = _optional_str(raw_row.get("date"))
-        row["composite_ticker"] = _optional_str(_first_non_empty(row.get("composite_ticker"), raw_row.get("instrument")))
-        for provider_field, target_field in PRICE_FIELD_MAP.items():
-            value = raw_row.get(target_field)
-            if value is None:
-                value = fields.get(provider_field)
-            row[target_field] = _optional_float(value)
-        row["adj_open"] = _optional_float(_first_non_empty(raw_row.get("adj_open"), fields.get("TR.ADJOPENPRICE")))
-        row["adj_high"] = _optional_float(_first_non_empty(raw_row.get("adj_high"), fields.get("TR.ADJHIGHPRICE")))
-        row["adj_low"] = _optional_float(_first_non_empty(raw_row.get("adj_low"), fields.get("TR.ADJLOWPRICE")))
-        row["adj_close"] = _optional_float(_first_non_empty(raw_row.get("adj_close"), fields.get("TR.ADJCLOSEPRICE")))
-        row["adj_volume"] = _optional_float(_first_non_empty(raw_row.get("adj_volume"), fields.get("TR.ADJVOLUME")))
-        row["dividend"] = _optional_float(raw_row.get("dividend"))
-        row["factor"] = _optional_float(raw_row.get("factor"))
-        row["split_ratio"] = _optional_float(raw_row.get("split_ratio"))
-        row["intraperiod"] = _optional_bool(raw_row.get("intraperiod"))
-        row["change"] = _optional_float(raw_row.get("change"))
-        row["percent_change"] = _optional_float(raw_row.get("percent_change"))
-        row["fifty_two_week_high"] = _optional_float(raw_row.get("fifty_two_week_high"))
-        row["fifty_two_week_low"] = _optional_float(raw_row.get("fifty_two_week_low"))
+        row["instrument"] = _optional_str(raw_row.get("instrument"))
+        if raw_like:
+            row["fields"] = dict(raw_row.get("fields") or {})
+        else:
+            for key, value in raw_row.items():
+                if key == "fields":
+                    continue
+                row[key] = value
         flattened_rows.append(row)
     return flattened_rows
 

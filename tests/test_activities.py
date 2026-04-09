@@ -196,6 +196,112 @@ def test_resolve_market_window_week_and_month_follow_trading_calendar() -> None:
     assert quarter_window["effective_end_date"] == "2024-04-10"
 
 
+def test_flatten_price_rows_matches_marketio_raw_contract() -> None:
+    rows = activities._flatten_price_rows(
+        {
+            "ticker": "AA",
+            "source": "lseg",
+            "provider": "lseg",
+            "frequency": "daily",
+            "ric": "AA.N",
+            "primary_ric": "AA.N",
+            "cik_number": "0001675149",
+            "organization_id": "4295904304",
+            "requested_period": "day",
+            "bar_granularity": "day",
+            "as_of_date": "2026-04-02",
+            "effective_start_date": "2026-04-02",
+            "effective_end_date": "2026-04-02",
+            "data": [
+                {
+                    "date": "2026-04-02",
+                    "instrument": "AA.N",
+                    "fields": {"TR.CLOSEPRICE": 71.53},
+                }
+            ],
+        },
+        universe_key="mmh5r1",
+        execution=activities._execution_metadata_from_payload(_execution_payload()),
+    )
+
+    assert rows == [
+        {
+            "ticker": "AA",
+            "requested_period": "day",
+            "as_of_date": "2026-04-02",
+            "effective_start_date": "2026-04-02",
+            "effective_end_date": "2026-04-02",
+            "bar_granularity": "day",
+            "universe_key": "mmh5r1",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "request_id": "req-123",
+            "source_system": "marketio",
+            "provider": "lseg",
+            "frequency": "daily",
+            "source": "lseg",
+            "ric": "AA.N",
+            "primary_ric": "AA.N",
+            "cik_number": "0001675149",
+            "organization_id": "4295904304",
+            "date": "2026-04-02",
+            "instrument": "AA.N",
+            "fields": {"TR.CLOSEPRICE": 71.53},
+        }
+    ]
+
+
+def test_flatten_price_rows_matches_marketio_prod_contract() -> None:
+    rows = activities._flatten_price_rows(
+        {
+            "ticker": "AA",
+            "provider": "lseg",
+            "frequency": "daily",
+            "ric": "AA.N",
+            "primary_ric": "AA.N",
+            "requested_period": "day",
+            "bar_granularity": "day",
+            "as_of_date": "2026-04-02",
+            "effective_start_date": "2026-04-02",
+            "effective_end_date": "2026-04-02",
+            "data": [
+                {
+                    "date": "2026-04-02",
+                    "instrument": "AA.N",
+                    "close": 71.53,
+                    "price_pct_chg_1d": 1.5,
+                }
+            ],
+        },
+        universe_key="mmh5r1",
+        execution=activities._execution_metadata_from_payload(_execution_payload()),
+    )
+
+    assert rows == [
+        {
+            "ticker": "AA",
+            "requested_period": "day",
+            "as_of_date": "2026-04-02",
+            "effective_start_date": "2026-04-02",
+            "effective_end_date": "2026-04-02",
+            "bar_granularity": "day",
+            "universe_key": "mmh5r1",
+            "workflow_id": "wf-123",
+            "workflow_run_id": "run-123",
+            "request_id": "req-123",
+            "source_system": "marketio",
+            "provider": "lseg",
+            "frequency": "daily",
+            "ric": "AA.N",
+            "primary_ric": "AA.N",
+            "date": "2026-04-02",
+            "instrument": "AA.N",
+            "close": 71.53,
+            "price_pct_chg_1d": 1.5,
+        }
+    ]
+
+
 def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_calls: List[tuple[str, Dict[str, Any]]] = []
 
