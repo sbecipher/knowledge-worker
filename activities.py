@@ -199,14 +199,14 @@ def _object_uri(object_path: str) -> str:
 
 def _manifest_summary_payload(
     *,
-    end_date: str,
+    date: str,
     manifest_uri: str,
     manifest_object_path: str,
     artifact_count: int,
     datasets: List[str],
 ) -> Dict[str, Any]:
     return {
-        "end_date": end_date,
+        "date": date,
         "manifest_uri": manifest_uri,
         "manifest_object_path": manifest_object_path,
         "artifact_count": artifact_count,
@@ -246,10 +246,10 @@ def _validated_manifest_artifact(
             f"Manifest artifact uri is required: {artifact}",
             type_name="ArtifactValidationError",
         )
-    end_date = _optional_iso_date(artifact.get("end_date"))
-    if not end_date:
+    partition_date = _optional_iso_date(artifact.get("date"))
+    if not partition_date:
         raise _non_retryable(
-            f"Manifest artifact end_date is required: {artifact}",
+            f"Manifest artifact date is required: {artifact}",
             type_name="ArtifactValidationError",
         )
     artifact_request_id = _optional_str(artifact.get("request_id"))
@@ -281,7 +281,7 @@ def _validated_manifest_artifact(
     normalized["dataset"] = dataset
     normalized["uri"] = uri
     normalized["object_path"] = object_path
-    normalized["end_date"] = end_date
+    normalized["date"] = partition_date
     normalized["request_id"] = execution.request_id
     normalized["workflow_id"] = execution.workflow_id
     normalized["workflow_run_id"] = execution.workflow_run_id
@@ -859,7 +859,7 @@ def _flatten_price_rows(
     requested_period = str(artifact.get("requested_period") or MARKET_BAR_GRANULARITY_DAY)
     as_of_date = str(artifact.get("as_of_date") or artifact.get("effective_end_date") or "")
     effective_start_date = str(artifact.get("effective_start_date") or artifact.get("start_date") or "")
-    effective_end_date = str(artifact.get("effective_end_date") or artifact.get("end_date") or "")
+    effective_end_date = str(artifact.get("effective_end_date") or artifact.get("date") or "")
     base = _price_row_base(
         artifact=artifact,
         ticker=ticker,
@@ -933,9 +933,10 @@ def _save_price_artifacts(
                 "rows": [],
                 "requested_period": artifact.get("requested_period") or MARKET_BAR_GRANULARITY_DAY,
                 "bar_granularity": artifact.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY,
+                "date": artifact.get("date") or artifact.get("effective_end_date"),
                 "as_of_date": artifact.get("as_of_date") or artifact.get("effective_end_date"),
                 "effective_start_date": artifact.get("effective_start_date") or artifact.get("start_date"),
-                "effective_end_date": artifact.get("effective_end_date") or artifact.get("end_date"),
+                "effective_end_date": artifact.get("effective_end_date") or artifact.get("date"),
                 "provider": _optional_str(artifact.get("provider")),
                 "source": _optional_str(artifact.get("source")),
                 "ric": _preferred_ric(_first_non_empty(artifact.get("primary_ric"), artifact.get("ric"))),
@@ -1003,7 +1004,7 @@ def _save_price_artifacts(
             workflow_run_id=execution.workflow_run_id,
             ticker=ticker,
             start_date=str(grouped_payload["effective_start_date"]),
-            end_date=str(grouped_payload["effective_end_date"]),
+            date=str(grouped_payload["date"]),
             requested_period=str(grouped_payload["requested_period"]),
             bar_granularity=str(grouped_payload["bar_granularity"]),
             as_of_date=str(grouped_payload["as_of_date"]),
@@ -1218,7 +1219,7 @@ def _save_fundamentals_artifacts(
                     "rows": [],
                     "ticker": ticker,
                     "start_date": None,
-                    "end_date": period_end_date,
+                    "date": period_end_date,
                     "requested_period": request_context["requested_period"],
                     "request_start_date": request_context["request_start_date"],
                     "request_end_date": request_context["request_end_date"],
@@ -1251,7 +1252,7 @@ def _save_fundamentals_artifacts(
         grouped.items(),
         key=lambda item: (
             item[1]["ticker"],
-            item[1]["end_date"],
+            item[1]["date"],
             item[1]["start_date"] or "",
         ),
     ):
@@ -1263,7 +1264,7 @@ def _save_fundamentals_artifacts(
             ticker=ticker,
             suffix=execution.workflow_id,
             requested_period=str(grouped_payload["requested_period"]),
-            effective_end_date=str(grouped_payload["end_date"]),
+            effective_end_date=str(grouped_payload["date"]),
             prefix=SETTINGS.gcs_prefix,
         )
         local_path = _temp_path(object_path)
@@ -1274,7 +1275,7 @@ def _save_fundamentals_artifacts(
             execution,
             ticker,
             grouped_payload["start_date"],
-            str(grouped_payload["end_date"]),
+            str(grouped_payload["date"]),
             str(grouped_payload["requested_period"]),
             universe_key=resolved_universe_key,
         )
@@ -1316,7 +1317,7 @@ def _save_fundamentals_artifacts(
             workflow_run_id=execution.workflow_run_id,
             ticker=ticker,
             start_date=grouped_payload["start_date"],
-            end_date=str(grouped_payload["end_date"]),
+            date=str(grouped_payload["date"]),
             requested_period=str(grouped_payload["requested_period"]),
             request_start_date=grouped_payload.get("request_start_date"),
             request_end_date=grouped_payload.get("request_end_date"),
@@ -1394,30 +1395,37 @@ def _save_artifacts(
                 record_count = int(raw_record_count)
         ticker = artifact.get("ticker") or ""
         start_date = artifact.get("start_date")
-        end_date = artifact.get("end_date")
+        partition_date = _optional_iso_date(
+            _first_non_empty(
+                artifact.get("date"),
+                artifact.get("_partition_date"),
+            )
+        )
         filename_suffix: Optional[str] = None
         if dataset == "edgar":
-            filename_suffix = execution.workflow_id if end_date else f"edgar_{date.today().strftime('%Y%m%d')}"
+            filename_suffix = execution.workflow_id if partition_date else f"edgar_{date.today().strftime('%Y%m%d')}"
         object_path = build_object_path(
             layer=layer,
             dataset=dataset,
             universe_key=resolved_universe_key,
             ticker=ticker,
             start_date=start_date,
-            end_date=end_date,
+            date=partition_date,
             suffix=filename_suffix,
             requested_period=freq or artifact.get("frequency"),
             prefix=SETTINGS.gcs_prefix,
         )
         local_path = _temp_path(object_path)
-        write_json(local_path, artifact)
+        payload_to_write = dict(artifact)
+        payload_to_write.pop("_partition_date", None)
+        write_json(local_path, payload_to_write)
         meta = _metadata_base(
             layer,
             dataset,
             execution,
             ticker,
             start_date,
-            end_date,
+            partition_date,
             freq or artifact.get("frequency"),
             universe_key=resolved_universe_key,
         )
@@ -1490,7 +1498,7 @@ def _save_artifacts(
             workflow_run_id=execution.workflow_run_id,
             ticker=str(ticker).upper() if ticker else None,
             start_date=start_date,
-            end_date=end_date,
+            date=partition_date,
             requested_period=_optional_str(freq or artifact.get("frequency")),
             record_count=record_count,
             local_path=str(local_path),
@@ -1716,7 +1724,6 @@ def persist_company_metadata(
         if not isinstance(row, dict):
             continue
         persisted_row = dict(row)
-        persisted_row["end_date"] = metadata_end_date
         if active_source_uri:
             persisted_row["active_source_uri"] = active_source_uri
         if active_source_object_path:
@@ -1727,7 +1734,7 @@ def persist_company_metadata(
             universe_key=resolved_universe_key,
             ticker=ticker,
             suffix=execution_meta.workflow_id,
-            end_date=metadata_end_date,
+            date=metadata_end_date,
             prefix=SETTINGS.gcs_prefix,
         )
         local_path = _temp_path(object_path)
@@ -1769,7 +1776,7 @@ def persist_company_metadata(
             primary_ric=_optional_str(row.get("primary_ric")),
             organization_id=_optional_str(row.get("organization_id")),
             cik_number=_optional_str(row.get("cik_number")),
-            end_date=metadata_end_date,
+            date=metadata_end_date,
             active_source_uri=active_source_uri,
             active_source_object_path=active_source_object_path,
         )
@@ -1825,11 +1832,11 @@ def persist_layer_manifests(
             execution=execution_meta,
             universe_key=resolved_universe_key,
         )
-        group_key = (str(normalized["layer"]), str(normalized["end_date"]))
+        group_key = (str(normalized["layer"]), str(normalized["date"]))
         grouped_artifacts.setdefault(group_key, []).append(normalized)
 
     manifest_count = 0
-    for (layer, end_date), grouped_payload in sorted(grouped_artifacts.items()):
+    for (layer, partition_date), grouped_payload in sorted(grouped_artifacts.items()):
         ordered_artifacts = sorted(
             grouped_payload,
             key=lambda artifact: (
@@ -1845,7 +1852,7 @@ def persist_layer_manifests(
             "workflow_run_id": execution_meta.workflow_run_id,
             "universe_key": resolved_universe_key,
             "layer": layer,
-            "end_date": end_date,
+            "date": partition_date,
             "artifact_count": len(ordered_artifacts),
             "datasets": datasets,
             "artifacts": ordered_artifacts,
@@ -1854,7 +1861,7 @@ def persist_layer_manifests(
             layer=layer,
             workflow_id=execution_meta.workflow_id,
             prefix=SETTINGS.gcs_prefix,
-            end_date=end_date,
+            date=partition_date,
         )
         manifest_local_path = _temp_path(manifest_object_path)
         write_json(manifest_local_path, manifest_payload)
@@ -1864,7 +1871,7 @@ def persist_layer_manifests(
             execution_meta,
             None,
             None,
-            end_date,
+            partition_date,
             None,
             universe_key=resolved_universe_key,
         )
@@ -1875,7 +1882,7 @@ def persist_layer_manifests(
             manifest_local_path.unlink(missing_ok=True)
         manifests[layer].append(
             _manifest_summary_payload(
-                end_date=end_date,
+                date=partition_date,
                 manifest_uri=manifest_uri,
                 manifest_object_path=manifest_object_path,
                 artifact_count=len(ordered_artifacts),
@@ -1995,7 +2002,7 @@ def fetch_edgar_source(
 
         artifact["record_count"] = _recent_filings_count(artifact)
         artifact["requested_ticker"] = ticker_candidate
-        artifact["end_date"] = edgar_end_date
+        artifact["_partition_date"] = edgar_end_date
         artifact.update(active_source_lineage)
         artifacts.append(artifact)
 
@@ -2079,13 +2086,12 @@ def fetch_fundamentals_prod(
                 "organization_id": artifact_ref.get("organization_id"),
                 "cik_number": artifact_ref.get("cik_number"),
                 "start_date": artifact_ref.get("request_start_date") or artifact_ref.get("start_date"),
-                "end_date": artifact_ref.get("request_end_date") or artifact_ref.get("end_date"),
                 "record_count": len(flattened),
                 "page_count": artifact_ref.get("page_count") or 1,
                 "frequency": artifact_ref.get("requested_period") or FUNDAMENTALS_DEFAULT_FREQUENCY,
                 "requested_period": artifact_ref.get("requested_period") or FUNDAMENTALS_DEFAULT_FREQUENCY,
                 "request_start_date": artifact_ref.get("request_start_date") or artifact_ref.get("start_date"),
-                "request_end_date": artifact_ref.get("request_end_date") or artifact_ref.get("end_date"),
+                "request_end_date": artifact_ref.get("request_end_date"),
                 "request_period": artifact_ref.get("request_period") or FUNDAMENTALS_DEFAULT_REQUEST_PERIOD,
                 "request_currency": artifact_ref.get("request_currency"),
                 "request_scale": artifact_ref.get("request_scale"),
@@ -2142,6 +2148,7 @@ def fetch_prices_raw(
         frequency=window["requested_period"],
     )
     for artifact in artifacts:
+        artifact["date"] = window["effective_end_date"]
         artifact["requested_period"] = window["requested_period"]
         artifact["bar_granularity"] = window["bar_granularity"]
         artifact["as_of_date"] = window["as_of_date"]
@@ -2169,7 +2176,7 @@ def fetch_prices_prod(
     for artifact_ref in raw_artifacts:
         ticker = _required_ticker(artifact_ref, "raw prices")
         start_date = artifact_ref.get("effective_start_date") or artifact_ref.get("start_date")
-        end_date = artifact_ref.get("effective_end_date") or artifact_ref.get("end_date")
+        partition_date = artifact_ref.get("date") or artifact_ref.get("effective_end_date")
         source_rows = _load_artifact_payload(
             artifact_ref,
             warning_prefix=f"Unable to load raw prices artifact for ticker={ticker}",
@@ -2212,7 +2219,7 @@ def fetch_prices_prod(
                 "organization_id": artifact_ref.get("organization_id"),
                 "cik_number": artifact_ref.get("cik_number"),
                 "start_date": start_date,
-                "end_date": end_date,
+                "date": partition_date,
                 "record_count": len(flattened),
                 "page_count": artifact_ref.get("page_count") or 1,
                 "frequency": MARKETIO_MARKET_FREQUENCY_DAILY,
@@ -2222,7 +2229,7 @@ def fetch_prices_prod(
                 "bar_granularity": artifact_ref.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY,
                 "as_of_date": artifact_ref.get("as_of_date") or artifact_ref.get("effective_end_date"),
                 "effective_start_date": start_date,
-                "effective_end_date": end_date,
+                "effective_end_date": partition_date,
                 "data": flattened,
                 "source_uri": artifact_ref.get("uri"),
                 "source_object_path": artifact_ref.get("object_path"),

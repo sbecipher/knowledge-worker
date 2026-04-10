@@ -9,14 +9,14 @@ from scripts.backfill_prod_prices_from_source import (
 
 def test_parse_source_object_path_extracts_partitions_and_source_workflow_id() -> None:
     info = parse_source_object_path(
-        "source/prices/granularity=day/end_date=2026-04-07/ticker=AA/wf-123.ndjson",
+        "source/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123.ndjson",
         "12345",
     )
 
     assert info == SourcePriceObjectInfo(
-        object_path="source/prices/granularity=day/end_date=2026-04-07/ticker=AA/wf-123.ndjson",
+        object_path="source/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123.ndjson",
         ticker="AA",
-        end_date="2026-04-07",
+        date="2026-04-07",
         granularity="day",
         source_workflow_id="wf-123",
         generation="12345",
@@ -25,9 +25,9 @@ def test_parse_source_object_path_extracts_partitions_and_source_workflow_id() -
 
 def test_output_workflow_id_modes_always_differ_from_source_workflow_id() -> None:
     info = SourcePriceObjectInfo(
-        object_path="source/prices/granularity=day/end_date=2026-04-07/ticker=AA/wf-123.ndjson",
+        object_path="source/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123.ndjson",
         ticker="AA",
-        end_date="2026-04-07",
+        date="2026-04-07",
         granularity="day",
         source_workflow_id="wf-123",
         generation="12345",
@@ -71,9 +71,9 @@ def test_output_workflow_id_modes_always_differ_from_source_workflow_id() -> Non
 
 def test_destination_object_path_uses_prod_prices_layout() -> None:
     info = SourcePriceObjectInfo(
-        object_path="source/prices/granularity=day/end_date=2026-04-07/ticker=AA/wf-123.ndjson",
+        object_path="source/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123.ndjson",
         ticker="AA",
-        end_date="2026-04-07",
+        date="2026-04-07",
         granularity="day",
         source_workflow_id="wf-123",
         generation="12345",
@@ -81,14 +81,14 @@ def test_destination_object_path_uses_prod_prices_layout() -> None:
 
     path = destination_object_path(object_info=info, workflow_id="wf-123__prod", gcs_prefix="")
 
-    assert path == "prod/prices/granularity=day/end_date=2026-04-07/ticker=AA/wf-123__prod.ndjson"
+    assert path == "prod/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123__prod.ndjson"
 
 
 def test_flatten_prod_rows_uses_source_prices_rows_and_new_workflow_id() -> None:
     info = SourcePriceObjectInfo(
-        object_path="source/prices/granularity=day/end_date=2026-04-07/ticker=AA/wf-123.ndjson",
+        object_path="source/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123.ndjson",
         ticker="AA",
-        end_date="2026-04-07",
+        date="2026-04-07",
         granularity="day",
         source_workflow_id="wf-123",
         generation="12345",
@@ -150,7 +150,7 @@ def test_flatten_prod_rows_uses_source_prices_rows_and_new_workflow_id() -> None
             "organization_id": "4295904304",
             "cik_number": "0001675149",
             "source_uri": None,
-            "source_object_path": "source/prices/granularity=day/end_date=2026-04-07/ticker=AA/wf-123.ndjson",
+            "source_object_path": "source/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123.ndjson",
             "source_dataset": "prices",
             "transform_name": "prices_prod_transform",
             "transform_version": "v1",

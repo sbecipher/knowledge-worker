@@ -14,13 +14,13 @@ from workflows import MarketDataWorkflow
 
 def _artifact_ref(ticker: str, dataset: str, layer: str, count: int = 1) -> Dict[str, Any]:
     if dataset == "metadata":
-        object_path = f"{layer}/metadata/end_date=2026-04-09/ticker={ticker}/artifact.json"
+        object_path = f"{layer}/metadata/date=2026-04-09/ticker={ticker}/artifact.json"
     elif dataset == "edgar":
-        object_path = f"{layer}/edgar/end_date=2026-04-09/ticker={ticker}/artifact.json"
+        object_path = f"{layer}/edgar/date=2026-04-09/ticker={ticker}/artifact.json"
     elif dataset == "fundamentals":
-        object_path = f"{layer}/fundamentals/frequency=FQ/end_date=2024-01-31/ticker={ticker}/artifact.ndjson"
+        object_path = f"{layer}/fundamentals/frequency=FQ/date=2024-01-31/ticker={ticker}/artifact.ndjson"
     elif dataset == "prices":
-        object_path = f"{layer}/prices/granularity=day/end_date=2024-01-31/ticker={ticker}/artifact.ndjson"
+        object_path = f"{layer}/prices/granularity=day/date=2024-01-31/ticker={ticker}/artifact.ndjson"
     else:
         object_path = f"{layer}/{dataset}/{ticker}/artifact.json"
     return {
@@ -34,16 +34,16 @@ def _artifact_ref(ticker: str, dataset: str, layer: str, count: int = 1) -> Dict
         "workflow_run_id": "run-123",
         "ticker": ticker,
         "start_date": "2024-01-01",
-        "end_date": "2026-04-09" if dataset in {"metadata", "edgar"} else "2024-01-31",
+        "date": "2026-04-09" if dataset in {"metadata", "edgar"} else "2024-01-31",
         "record_count": count,
     }
 
 
-def _manifest_summary(layer: str, end_date: str, artifact_count: int, datasets: List[str]) -> Dict[str, Any]:
+def _manifest_summary(layer: str, date: str, artifact_count: int, datasets: List[str]) -> Dict[str, Any]:
     return {
-        "end_date": end_date,
-        "manifest_uri": f"gs://bucket/{layer}/manifests/end_date={end_date}/wf-123.json",
-        "manifest_object_path": f"{layer}/manifests/end_date={end_date}/wf-123.json",
+        "date": date,
+        "manifest_uri": f"gs://bucket/{layer}/manifests/date={date}/wf-123.json",
+        "manifest_object_path": f"{layer}/manifests/date={date}/wf-123.json",
         "artifact_count": artifact_count,
         "datasets": datasets,
     }
@@ -564,11 +564,11 @@ def test_workflow_keeps_multiple_fundamentals_refs_per_ticker() -> None:
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         first = _artifact_ref(ticker, "fundamentals", "source")
-        first["object_path"] = "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
-        first["end_date"] = "2026-03-31"
+        first["object_path"] = "source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson"
+        first["date"] = "2026-03-31"
         second = _artifact_ref(ticker, "fundamentals", "source")
-        second["object_path"] = "source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson"
-        second["end_date"] = "2026-06-30"
+        second["object_path"] = "source/fundamentals/frequency=FQ/date=2026-06-30/ticker=AA/wf-123.ndjson"
+        second["date"] = "2026-06-30"
         return [first, second]
 
     persist_layer_manifests = _persist_layer_manifests_activity(
@@ -597,12 +597,12 @@ def test_workflow_keeps_multiple_fundamentals_refs_per_ticker() -> None:
         )
     )
 
-    assert [ref["end_date"] for ref in result["AA"]["fundamentals_raw"]] == ["2026-03-31", "2026-06-30"]
+    assert [ref["date"] for ref in result["AA"]["fundamentals_raw"]] == ["2026-03-31", "2026-06-30"]
     assert result["manifests"]["source"] == [
         _manifest_summary("source", "2026-03-31", 1, ["fundamentals"]),
         _manifest_summary("source", "2026-06-30", 1, ["fundamentals"]),
     ]
-    assert [artifact["end_date"] for artifact in captured["artifacts"]] == ["2026-03-31", "2026-06-30"]
+    assert [artifact["date"] for artifact in captured["artifacts"]] == ["2026-03-31", "2026-06-30"]
 
 
 def test_full_run_emits_source_and_prod_manifests() -> None:
@@ -620,7 +620,7 @@ def test_full_run_emits_source_and_prod_manifests() -> None:
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ref = _artifact_ref(ticker, "fundamentals", "source")
-        ref["end_date"] = "2024-01-31"
+        ref["date"] = "2024-01-31"
         return [ref]
 
     @activity.defn(name="fetch_fundamentals_prod")
@@ -630,7 +630,7 @@ def test_full_run_emits_source_and_prod_manifests() -> None:
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ref = _artifact_ref("AA", "fundamentals", "prod")
-        ref["end_date"] = "2024-01-31"
+        ref["date"] = "2024-01-31"
         return [ref]
 
     @activity.defn(name="fetch_prices_raw")
@@ -644,7 +644,7 @@ def test_full_run_emits_source_and_prod_manifests() -> None:
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ref = _artifact_ref(ticker, "prices", "source")
-        ref["end_date"] = "2024-01-31"
+        ref["date"] = "2024-01-31"
         return [ref]
 
     @activity.defn(name="fetch_prices_prod")
@@ -654,7 +654,7 @@ def test_full_run_emits_source_and_prod_manifests() -> None:
         execution: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         ref = _artifact_ref("AA", "prices", "prod")
-        ref["end_date"] = "2024-01-31"
+        ref["date"] = "2024-01-31"
         return [ref]
 
     persist_layer_manifests = _persist_layer_manifests_activity(

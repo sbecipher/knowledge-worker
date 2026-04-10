@@ -27,29 +27,29 @@ def test_metadata_source_path_uses_ticker_and_workflow_id() -> None:
         universe_key="mmh5r1",
         ticker="AA",
         suffix="wf-123",
-        end_date="2026-04-09",
+        date="2026-04-09",
     )
-    assert path == "source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"
+    assert path == "source/metadata/date=2026-04-09/ticker=AA/wf-123.json"
 
 
 def test_source_manifest_path_uses_workflow_id() -> None:
     assert (
-        build_manifest_object_path("source", "wf-123", end_date="2026-04-09")
-        == "source/manifests/end_date=2026-04-09/wf-123.json"
+        build_manifest_object_path("source", "wf-123", date="2026-04-09")
+        == "source/manifests/date=2026-04-09/wf-123.json"
     )
 
 
 def test_prod_manifest_path_uses_workflow_id() -> None:
     assert (
-        build_manifest_object_path("prod", "wf-123", end_date="2026-06-30")
-        == "prod/manifests/end_date=2026-06-30/wf-123.json"
+        build_manifest_object_path("prod", "wf-123", date="2026-06-30")
+        == "prod/manifests/date=2026-06-30/wf-123.json"
     )
 
 
 def test_artifact_ref_round_trip_payload() -> None:
     ref = ArtifactRef(
-        uri="gs://bucket/source/fundamentals/frequency=FQ/end_date=2024-03-31/ticker=AA/wf-123.ndjson",
-        object_path="source/fundamentals/frequency=FQ/end_date=2024-03-31/ticker=AA/wf-123.ndjson",
+        uri="gs://bucket/source/fundamentals/frequency=FQ/date=2024-03-31/ticker=AA/wf-123.ndjson",
+        object_path="source/fundamentals/frequency=FQ/date=2024-03-31/ticker=AA/wf-123.ndjson",
         layer="source",
         dataset="fundamentals",
         universe_key="mmh5r1",
@@ -58,7 +58,7 @@ def test_artifact_ref_round_trip_payload() -> None:
         workflow_run_id="run-123",
         ticker="AA",
         start_date="2024-01-01",
-        end_date="2024-03-31",
+        date="2024-03-31",
         requested_period="FQ",
         request_start_date="2024-01-01",
         request_end_date="2024-12-31",
@@ -80,7 +80,7 @@ def test_fundamentals_path_uses_partitioned_layout_and_ndjson_extension() -> Non
         requested_period="FQ",
         effective_end_date="2025-03-31",
     )
-    assert path == "source/fundamentals/frequency=FQ/end_date=2025-03-31/ticker=AA/wf-123.ndjson"
+    assert path == "source/fundamentals/frequency=FQ/date=2025-03-31/ticker=AA/wf-123.ndjson"
 
 
 def test_edgar_path_uses_request_date_suffix() -> None:
@@ -90,9 +90,9 @@ def test_edgar_path_uses_request_date_suffix() -> None:
         universe_key="mmh5r1",
         ticker="AA",
         suffix="wf-123",
-        end_date="2026-04-09",
+        date="2026-04-09",
     )
-    assert path == "source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json"
+    assert path == "source/edgar/date=2026-04-09/ticker=AA/wf-123.json"
 
 
 def test_prices_path_uses_partitioned_layout_and_ndjson_extension() -> None:
@@ -105,4 +105,4 @@ def test_prices_path_uses_partitioned_layout_and_ndjson_extension() -> None:
         bar_granularity="day",
         effective_end_date="2024-01-31",
     )
-    assert path == "source/prices/granularity=day/end_date=2024-01-31/ticker=AA/wf-123.ndjson"
+    assert path == "source/prices/granularity=day/date=2024-01-31/ticker=AA/wf-123.ndjson"

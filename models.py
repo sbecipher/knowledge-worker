@@ -82,7 +82,7 @@ class ArtifactRef:
     workflow_run_id: str
     ticker: Optional[str] = None
     start_date: Optional[str] = None
-    end_date: Optional[str] = None
+    date: Optional[str] = None
     requested_period: Optional[str] = None
     bar_granularity: Optional[str] = None
     as_of_date: Optional[str] = None

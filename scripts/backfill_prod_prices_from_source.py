@@ -37,7 +37,7 @@ WORKFLOW_ID_MODES = ("derived", "suffix", "run", "explicit")
 class SourcePriceObjectInfo:
     object_path: str
     ticker: str
-    end_date: str
+    date: str
     granularity: str
     source_workflow_id: str
     generation: str
@@ -68,14 +68,14 @@ def parse_source_object_path(object_path: str, generation: str) -> SourcePriceOb
         raise ValueError(f"Unsupported source prices path: {object_path}")
 
     granularity_part = parts[2]
-    end_date_part = parts[3]
+    date_part = parts[3]
     ticker_part = parts[4]
     filename = parts[5]
 
     if not granularity_part.startswith("granularity="):
         raise ValueError(f"Missing granularity partition in source prices path: {object_path}")
-    if not end_date_part.startswith("end_date="):
-        raise ValueError(f"Missing end_date partition in source prices path: {object_path}")
+    if not date_part.startswith("date="):
+        raise ValueError(f"Missing date partition in source prices path: {object_path}")
     if not ticker_part.startswith("ticker="):
         raise ValueError(f"Missing ticker partition in source prices path: {object_path}")
     if not filename.endswith(".ndjson"):
@@ -84,7 +84,7 @@ def parse_source_object_path(object_path: str, generation: str) -> SourcePriceOb
     return SourcePriceObjectInfo(
         object_path=object_path,
         ticker=ticker_part.split("=", 1)[1].upper(),
-        end_date=end_date_part.split("=", 1)[1],
+        date=date_part.split("=", 1)[1],
         granularity=granularity_part.split("=", 1)[1],
         source_workflow_id=Path(filename).stem,
         generation=str(generation),
@@ -127,7 +127,7 @@ def destination_object_path(*, object_info: SourcePriceObjectInfo, workflow_id: 
         ticker=object_info.ticker,
         suffix=workflow_id,
         bar_granularity=object_info.granularity,
-        effective_end_date=object_info.end_date,
+        effective_end_date=object_info.date,
         prefix=gcs_prefix,
     )
 
@@ -162,9 +162,9 @@ def _artifact_context(source_rows: List[Dict[str, Any]], object_info: SourcePric
         "ticker": object_info.ticker,
         "requested_period": _optional_str(first_row.get("requested_period")) or REQUESTED_PERIOD,
         "bar_granularity": _optional_str(first_row.get("bar_granularity")) or object_info.granularity,
-        "as_of_date": _optional_str(first_row.get("as_of_date")) or object_info.end_date,
-        "effective_start_date": _optional_str(first_row.get("effective_start_date")) or object_info.end_date,
-        "effective_end_date": _optional_str(first_row.get("effective_end_date")) or object_info.end_date,
+        "as_of_date": _optional_str(first_row.get("as_of_date")) or object_info.date,
+        "effective_start_date": _optional_str(first_row.get("effective_start_date")) or object_info.date,
+        "effective_end_date": _optional_str(first_row.get("effective_end_date")) or object_info.date,
         "provider": _optional_str(first_row.get("provider")),
         "source": _optional_str(first_row.get("source")),
         "ric": _optional_str(first_row.get("ric")),
@@ -330,7 +330,7 @@ def run_backfill(
                 "dataset": "prices",
                 "ticker": info.ticker,
                 "granularity": info.granularity,
-                "end_date": info.end_date,
+                "date": info.date,
                 "workflow_id": output_id,
                 "request_id": output_id,
                 "workflow_run_id": output_id,

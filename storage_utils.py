@@ -61,7 +61,7 @@ def build_object_path(
     universe_key: Optional[str] = None,
     ticker: Optional[str] = None,
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
+    date: Optional[str] = None,
     suffix: Optional[str] = None,
     requested_period: Optional[str] = None,
     bar_granularity: Optional[str] = None,
@@ -98,7 +98,7 @@ def build_object_path(
             [
                 "prices",
                 f"granularity={sanitize_path_segment(bar_granularity.lower())}",
-                f"end_date={format_iso_date(effective_end_date)}",
+                f"date={format_iso_date(effective_end_date)}",
                 f"ticker={safe_ticker}",
                 f"{sanitize_path_segment(suffix)}.ndjson",
             ]
@@ -120,14 +120,14 @@ def build_object_path(
             [
                 "fundamentals",
                 f"frequency={safe_frequency}",
-                f"end_date={format_iso_date(effective_end_date)}",
+                f"date={format_iso_date(effective_end_date)}",
                 f"ticker={safe_ticker}",
                 f"{sanitize_path_segment(suffix)}.ndjson",
             ]
         )
         return str(PurePosixPath(*parts))
 
-    if dataset == "metadata" and end_date:
+    if dataset == "metadata" and date:
         if not ticker:
             raise ValueError("ticker required for metadata path")
         if not suffix:
@@ -136,7 +136,7 @@ def build_object_path(
         parts.extend(
             [
                 "metadata",
-                f"end_date={format_iso_date(end_date)}",
+                f"date={format_iso_date(date)}",
                 f"ticker={safe_ticker}",
                 f"{sanitize_path_segment(suffix)}.json",
             ]
@@ -150,7 +150,7 @@ def build_object_path(
     else:
         safe_ticker = ""
 
-    if dataset == "edgar" and end_date:
+    if dataset == "edgar" and date:
         if not ticker:
             raise ValueError("ticker required for edgar path")
         if not suffix:
@@ -158,7 +158,7 @@ def build_object_path(
         parts = [p for p in [prefix, layer, "edgar"] if p]
         parts.extend(
             [
-                f"end_date={format_iso_date(end_date)}",
+                f"date={format_iso_date(date)}",
                 f"ticker={safe_ticker}",
                 f"{sanitize_path_segment(suffix)}.json",
             ]
@@ -179,8 +179,8 @@ def build_object_path(
             filename_parts.append(sanitize_path_segment(requested_period.lower()))
         if start_date:
             filename_parts.append(format_date(start_date))
-        if end_date:
-            filename_parts.append(format_date(end_date))
+        if date:
+            filename_parts.append(format_date(date))
         if suffix:
             filename_parts.append(sanitize_path_segment(suffix))
     if not filename_parts:
@@ -203,15 +203,15 @@ def build_manifest_object_path(
     layer: str,
     workflow_id: str,
     prefix: str = "",
-    end_date: Optional[str] = None,
+    date: Optional[str] = None,
 ) -> str:
     if not layer:
         raise ValueError("layer required for manifest path")
     if not workflow_id:
         raise ValueError("workflow_id required for manifest path")
     parts = [p for p in [prefix, sanitize_path_segment(layer.lower()), "manifests"] if p]
-    if end_date:
-        parts.append(f"end_date={format_iso_date(end_date)}")
+    if date:
+        parts.append(f"date={format_iso_date(date)}")
     parts.append(f"{sanitize_path_segment(workflow_id)}.json")
     return str(PurePosixPath(*parts))
 

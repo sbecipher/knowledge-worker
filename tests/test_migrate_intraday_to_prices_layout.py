@@ -40,7 +40,7 @@ def test_destination_object_path_uses_partitioned_prices_layout() -> None:
 
     path = destination_object_path(object_info=info, workflow_id="legacy_deadbeefdeadbe", gcs_prefix="")
 
-    assert path == "source/prices/granularity=day/end_date=2014-10-07/ticker=AA/legacy_deadbeefdeadbe.ndjson"
+    assert path == "source/prices/granularity=day/date=2014-10-07/ticker=AA/legacy_deadbeefdeadbe.ndjson"
 
 
 def test_flatten_legacy_payload_emits_bigquery_friendly_rows() -> None:

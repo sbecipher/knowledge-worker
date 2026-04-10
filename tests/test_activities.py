@@ -129,10 +129,12 @@ def test_persist_company_metadata_writes_per_ticker_artifact_without_manifest(
 ) -> None:
     uploaded_paths: List[str] = []
     uploaded_metadata: Dict[str, Dict[str, Any]] = {}
+    uploaded_payloads: Dict[str, Dict[str, Any]] = {}
 
     def fake_upload(local_path, object_path, metadata=None):
         uploaded_paths.append(object_path)
         uploaded_metadata[object_path] = dict(metadata or {})
+        uploaded_payloads[object_path] = json.loads(Path(local_path).read_text(encoding="utf-8"))
         return f"gs://bucket/{object_path}"
 
     monkeypatch.setattr(activities.UPLOADER, "upload_file", fake_upload)
@@ -169,18 +171,20 @@ def test_persist_company_metadata_writes_per_ticker_artifact_without_manifest(
     assert result["persisted_tickers"] == ["AA"]
     assert (
         result["artifacts_by_ticker"]["AA"][0]["object_path"]
-        == "source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"
+        == "source/metadata/date=2026-04-09/ticker=AA/wf-123.json"
     )
-    assert result["artifacts_by_ticker"]["AA"][0]["end_date"] == "2026-04-09"
+    assert result["artifacts_by_ticker"]["AA"][0]["date"] == "2026-04-09"
+    assert "end_date" not in result["artifacts_by_ticker"]["AA"][0]
     assert result["artifacts_by_ticker"]["AA"][0]["active_source_object_path"] == "prod/models/mmh5r1/active.json"
     assert "manifest_object_path" not in result
     assert "manifest_uri" not in result
-    assert uploaded_paths == ["source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"]
-    assert uploaded_metadata["source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"]["end_date"] == "20260409"
+    assert uploaded_paths == ["source/metadata/date=2026-04-09/ticker=AA/wf-123.json"]
+    assert uploaded_metadata["source/metadata/date=2026-04-09/ticker=AA/wf-123.json"]["end_date"] == "20260409"
     assert (
-        uploaded_metadata["source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json"]["active_source_object_path"]
+        uploaded_metadata["source/metadata/date=2026-04-09/ticker=AA/wf-123.json"]["active_source_object_path"]
         == "prod/models/mmh5r1/active.json"
     )
+    assert "end_date" not in uploaded_payloads["source/metadata/date=2026-04-09/ticker=AA/wf-123.json"]
 
 
 def test_persist_layer_manifests_groups_by_layer_and_end_date(
@@ -200,8 +204,8 @@ def test_persist_layer_manifests_groups_by_layer_and_end_date(
 
     artifacts = [
         {
-            "uri": "gs://bucket/source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json",
-            "object_path": "source/metadata/end_date=2026-04-09/ticker=AA/wf-123.json",
+            "uri": "gs://bucket/source/metadata/date=2026-04-09/ticker=AA/wf-123.json",
+            "object_path": "source/metadata/date=2026-04-09/ticker=AA/wf-123.json",
             "layer": "source",
             "dataset": "metadata",
             "universe_key": "mmh5r1",
@@ -209,12 +213,12 @@ def test_persist_layer_manifests_groups_by_layer_and_end_date(
             "workflow_id": "wf-123",
             "workflow_run_id": "run-123",
             "ticker": "AA",
-            "end_date": "2026-04-09",
+            "date": "2026-04-09",
             "record_count": 1,
         },
         {
-            "uri": "gs://bucket/source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json",
-            "object_path": "source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json",
+            "uri": "gs://bucket/source/edgar/date=2026-04-09/ticker=AA/wf-123.json",
+            "object_path": "source/edgar/date=2026-04-09/ticker=AA/wf-123.json",
             "layer": "source",
             "dataset": "edgar",
             "universe_key": "mmh5r1",
@@ -222,12 +226,12 @@ def test_persist_layer_manifests_groups_by_layer_and_end_date(
             "workflow_id": "wf-123",
             "workflow_run_id": "run-123",
             "ticker": "AA",
-            "end_date": "2026-04-09",
+            "date": "2026-04-09",
             "record_count": 1,
         },
         {
-            "uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
-            "object_path": "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "uri": "gs://bucket/source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "object_path": "source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
             "layer": "source",
             "dataset": "fundamentals",
             "universe_key": "mmh5r1",
@@ -235,12 +239,12 @@ def test_persist_layer_manifests_groups_by_layer_and_end_date(
             "workflow_id": "wf-123",
             "workflow_run_id": "run-123",
             "ticker": "AA",
-            "end_date": "2026-03-31",
+            "date": "2026-03-31",
             "record_count": 2,
         },
         {
-            "uri": "gs://bucket/prod/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
-            "object_path": "prod/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "uri": "gs://bucket/prod/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "object_path": "prod/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
             "layer": "prod",
             "dataset": "fundamentals",
             "universe_key": "mmh5r1",
@@ -248,7 +252,7 @@ def test_persist_layer_manifests_groups_by_layer_and_end_date(
             "workflow_id": "wf-123",
             "workflow_run_id": "run-123",
             "ticker": "AA",
-            "end_date": "2026-03-31",
+            "date": "2026-03-31",
             "record_count": 2,
         },
     ]
@@ -262,42 +266,42 @@ def test_persist_layer_manifests_groups_by_layer_and_end_date(
     assert result == {
         "source": [
             {
-                "end_date": "2026-03-31",
-                "manifest_uri": "gs://bucket/source/manifests/end_date=2026-03-31/wf-123.json",
-                "manifest_object_path": "source/manifests/end_date=2026-03-31/wf-123.json",
+                "date": "2026-03-31",
+                "manifest_uri": "gs://bucket/source/manifests/date=2026-03-31/wf-123.json",
+                "manifest_object_path": "source/manifests/date=2026-03-31/wf-123.json",
                 "artifact_count": 1,
                 "datasets": ["fundamentals"],
             },
             {
-                "end_date": "2026-04-09",
-                "manifest_uri": "gs://bucket/source/manifests/end_date=2026-04-09/wf-123.json",
-                "manifest_object_path": "source/manifests/end_date=2026-04-09/wf-123.json",
+                "date": "2026-04-09",
+                "manifest_uri": "gs://bucket/source/manifests/date=2026-04-09/wf-123.json",
+                "manifest_object_path": "source/manifests/date=2026-04-09/wf-123.json",
                 "artifact_count": 2,
                 "datasets": ["edgar", "metadata"],
             },
         ],
         "prod": [
             {
-                "end_date": "2026-03-31",
-                "manifest_uri": "gs://bucket/prod/manifests/end_date=2026-03-31/wf-123.json",
-                "manifest_object_path": "prod/manifests/end_date=2026-03-31/wf-123.json",
+                "date": "2026-03-31",
+                "manifest_uri": "gs://bucket/prod/manifests/date=2026-03-31/wf-123.json",
+                "manifest_object_path": "prod/manifests/date=2026-03-31/wf-123.json",
                 "artifact_count": 1,
                 "datasets": ["fundamentals"],
             }
         ],
     }
     assert uploaded_paths == [
-        "prod/manifests/end_date=2026-03-31/wf-123.json",
-        "source/manifests/end_date=2026-03-31/wf-123.json",
-        "source/manifests/end_date=2026-04-09/wf-123.json",
+        "prod/manifests/date=2026-03-31/wf-123.json",
+        "source/manifests/date=2026-03-31/wf-123.json",
+        "source/manifests/date=2026-04-09/wf-123.json",
     ]
-    assert uploaded_payloads["source/manifests/end_date=2026-04-09/wf-123.json"] == {
+    assert uploaded_payloads["source/manifests/date=2026-04-09/wf-123.json"] == {
         "request_id": "req-123",
         "workflow_id": "wf-123",
         "workflow_run_id": "run-123",
         "universe_key": "mmh5r1",
         "layer": "source",
-        "end_date": "2026-04-09",
+        "date": "2026-04-09",
         "artifact_count": 2,
         "datasets": ["edgar", "metadata"],
         "artifacts": [
@@ -305,8 +309,8 @@ def test_persist_layer_manifests_groups_by_layer_and_end_date(
             artifacts[0],
         ],
     }
-    assert uploaded_metadata["source/manifests/end_date=2026-04-09/wf-123.json"]["datasets"] == "edgar,metadata"
-    assert uploaded_metadata["prod/manifests/end_date=2026-03-31/wf-123.json"]["dataset"] == "manifest"
+    assert uploaded_metadata["source/manifests/date=2026-04-09/wf-123.json"]["datasets"] == "edgar,metadata"
+    assert uploaded_metadata["prod/manifests/date=2026-03-31/wf-123.json"]["dataset"] == "manifest"
 
 
 def test_fetch_companies_metadata_returns_consolidated_manifests(
@@ -335,7 +339,7 @@ def test_fetch_companies_metadata_returns_consolidated_manifests(
         "persist_company_metadata",
         lambda identifier_resolution, universe_key, execution: {
             "persisted_tickers": ["AA"],
-            "artifacts_by_ticker": {"AA": [{"layer": "source", "dataset": "metadata", "end_date": "2026-04-09"}]},
+            "artifacts_by_ticker": {"AA": [{"layer": "source", "dataset": "metadata", "date": "2026-04-09"}]},
             "active_source_uri": "gs://bucket/prod/models/mmh5r1/active.json",
             "active_source_object_path": "prod/models/mmh5r1/active.json",
             "ciks": {"AA": "0001675149"},
@@ -355,9 +359,9 @@ def test_fetch_companies_metadata_returns_consolidated_manifests(
         lambda artifacts, universe_key, execution: {
             "source": [
                 {
-                    "end_date": "2026-04-09",
-                    "manifest_uri": "gs://bucket/source/manifests/end_date=2026-04-09/wf-123.json",
-                    "manifest_object_path": "source/manifests/end_date=2026-04-09/wf-123.json",
+                    "date": "2026-04-09",
+                    "manifest_uri": "gs://bucket/source/manifests/date=2026-04-09/wf-123.json",
+                    "manifest_object_path": "source/manifests/date=2026-04-09/wf-123.json",
                     "artifact_count": 1,
                     "datasets": ["metadata"],
                 }
@@ -372,7 +376,7 @@ def test_fetch_companies_metadata_returns_consolidated_manifests(
         execution=_execution_payload(),
     )
 
-    assert result["manifests"]["source"][0]["manifest_object_path"] == "source/manifests/end_date=2026-04-09/wf-123.json"
+    assert result["manifests"]["source"][0]["manifest_object_path"] == "source/manifests/date=2026-04-09/wf-123.json"
     assert result["manifests"]["prod"] == []
     assert result["persisted_tickers"] == ["AA"]
 
@@ -511,6 +515,7 @@ def test_flatten_price_rows_matches_marketio_prod_contract() -> None:
 
 def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_calls: List[tuple[str, Dict[str, Any]]] = []
+    uploaded_payloads: Dict[str, Dict[str, Any]] = {}
 
     def fake_post(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         captured_calls.append((endpoint, payload))
@@ -519,8 +524,13 @@ def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) 
             "filings": {"recent": {"accessionNumber": ["0001", "0002"]}},
         }
 
+    def fake_upload(local_path, object_path, metadata=None):
+        uploaded_payloads[object_path] = json.loads(Path(local_path).read_text(encoding="utf-8"))
+        return f"gs://bucket/{object_path}"
+
     monkeypatch.setattr(activities, "_post_json", fake_post)
     monkeypatch.setattr(activities, "_current_end_date", lambda: "2026-04-09")
+    monkeypatch.setattr(activities.UPLOADER, "upload_file", fake_upload)
 
     result = activities.fetch_edgar_source(
         tickers=["AA"],
@@ -531,9 +541,11 @@ def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) 
     assert captured_calls == [(activities.MARKETIO_ROUTE_EDGAR_RAW, {"ticker": "AA"})]
     assert result[0]["record_count"] == 2
     assert result[0]["dataset"] == "edgar"
-    assert result[0]["end_date"] == "2026-04-09"
-    assert result[0]["object_path"] == "source/edgar/end_date=2026-04-09/ticker=AA/wf-123.json"
+    assert result[0]["date"] == "2026-04-09"
+    assert "end_date" not in result[0]
+    assert result[0]["object_path"] == "source/edgar/date=2026-04-09/ticker=AA/wf-123.json"
     assert result[0]["active_source_object_path"] == "prod/models/mmh5r1/active.json"
+    assert "end_date" not in uploaded_payloads["source/edgar/date=2026-04-09/ticker=AA/wf-123.json"]
 
 
 def test_fetch_fundamentals_raw_partitions_source_rows_by_period_end_date(
@@ -598,9 +610,10 @@ def test_fetch_fundamentals_raw_partitions_source_rows_by_period_end_date(
         execution=_execution_payload(),
     )
 
-    assert [item["end_date"] for item in result] == ["2026-03-31", "2026-06-30"]
-    assert result[0]["object_path"] == "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
-    assert result[1]["object_path"] == "source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson"
+    assert [item["date"] for item in result] == ["2026-03-31", "2026-06-30"]
+    assert all("end_date" not in item for item in result)
+    assert result[0]["object_path"] == "source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson"
+    assert result[1]["object_path"] == "source/fundamentals/frequency=FQ/date=2026-06-30/ticker=AA/wf-123.ndjson"
     assert result[0]["requested_period"] == "FQ"
     assert result[0]["request_start_date"] == "2026-01-01"
     assert result[0]["request_end_date"] == "2026-12-31"
@@ -650,12 +663,12 @@ def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch
                 "statement": "income_statement",
                 "name": "TR.F.TotRevenue",
                 "period_start_date": artifact_ref["start_date"],
-                "period_end_date": artifact_ref["end_date"],
+                "period_end_date": artifact_ref["date"],
                 "financial_period_absolute": "FY2026Q1"
-                if artifact_ref["end_date"] == "2026-03-31"
+                if artifact_ref["date"] == "2026-03-31"
                 else "FY2026Q2",
                 "std_income_statement_all": 1000.0
-                if artifact_ref["end_date"] == "2026-03-31"
+                if artifact_ref["date"] == "2026-03-31"
                 else 1100.0,
             }
         ],
@@ -670,15 +683,15 @@ def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch
         [
             {
                 "ticker": "AA",
-                "uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson",
-                "object_path": "source/fundamentals/frequency=FQ/end_date=2026-06-30/ticker=AA/wf-123.ndjson",
+                "uri": "gs://bucket/source/fundamentals/frequency=FQ/date=2026-06-30/ticker=AA/wf-123.ndjson",
+                "object_path": "source/fundamentals/frequency=FQ/date=2026-06-30/ticker=AA/wf-123.ndjson",
                 "dataset": "fundamentals",
                 "ric": "AA.N",
                 "primary_ric": "AA.N",
                 "organization_id": "4295904304",
                 "cik_number": "0001675149",
                 "start_date": "2026-04-01",
-                "end_date": "2026-06-30",
+                "date": "2026-06-30",
                 "field_count": 6,
                 "page_count": 1,
                 "requested_period": "FQ",
@@ -690,15 +703,15 @@ def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch
             },
             {
                 "ticker": "AA",
-                "uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
-                "object_path": "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+                "uri": "gs://bucket/source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
+                "object_path": "source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
                 "dataset": "fundamentals",
                 "ric": "AA.N",
                 "primary_ric": "AA.N",
                 "organization_id": "4295904304",
                 "cik_number": "0001675149",
                 "start_date": "2026-01-01",
-                "end_date": "2026-03-31",
+                "date": "2026-03-31",
                 "field_count": 6,
                 "page_count": 1,
                 "requested_period": "FQ",
@@ -712,18 +725,19 @@ def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch
         execution=_execution_payload(),
     )
 
-    assert [item["end_date"] for item in result] == ["2026-03-31", "2026-06-30"]
+    assert [item["date"] for item in result] == ["2026-03-31", "2026-06-30"]
+    assert all("end_date" not in item for item in result)
     assert result[0]["ric"] == "AA.N"
     assert result[0]["organization_id"] == "4295904304"
     assert result[0]["record_count"] == 1
-    assert result[0]["object_path"] == "prod/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
+    assert result[0]["object_path"] == "prod/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson"
     assert result[0]["request_start_date"] == "2026-01-01"
     assert result[0]["request_end_date"] == "2026-12-31"
     assert result[0]["request_period"] == "FQ0:FQ-4"
     assert result[0]["request_currency"] == "USD"
     assert result[0]["request_scale"] == 6
-    assert result[0]["source_uri"] == "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
-    assert result[0]["source_object_path"] == "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson"
+    assert result[0]["source_uri"] == "gs://bucket/source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson"
+    assert result[0]["source_object_path"] == "source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson"
     assert result[0]["source_dataset"] == "fundamentals"
     assert result[0]["transform_name"] == activities.FUNDAMENTALS_PROD_TRANSFORM_NAME
     assert result[0]["transform_version"] == activities.PROD_TRANSFORM_VERSION
@@ -752,8 +766,8 @@ def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch
             "primary_ric": "AA.N",
             "organization_id": "4295904304",
             "cik_number": "0001675149",
-            "source_uri": "gs://bucket/source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
-            "source_object_path": "source/fundamentals/frequency=FQ/end_date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "source_uri": "gs://bucket/source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
+            "source_object_path": "source/fundamentals/frequency=FQ/date=2026-03-31/ticker=AA/wf-123.ndjson",
             "source_dataset": "fundamentals",
             "transform_name": activities.FUNDAMENTALS_PROD_TRANSFORM_NAME,
             "transform_version": activities.PROD_TRANSFORM_VERSION,
@@ -792,13 +806,14 @@ def test_fetch_prices_prod_derives_from_stored_source_artifact(monkeypatch: pyte
         [
             {
                 "ticker": "AA",
-                "uri": "gs://bucket/source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson",
-                "object_path": "source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson",
+                "uri": "gs://bucket/source/prices/granularity=day/date=2026-04-02/ticker=AA/wf-123.ndjson",
+                "object_path": "source/prices/granularity=day/date=2026-04-02/ticker=AA/wf-123.ndjson",
                 "dataset": "prices",
                 "ric": "AA.N",
                 "primary_ric": "AA.N",
                 "organization_id": "4295904304",
                 "cik_number": "0001675149",
+                "date": "2026-04-02",
                 "effective_start_date": "2026-04-02",
                 "effective_end_date": "2026-04-02",
                 "requested_period": "day",
@@ -812,10 +827,12 @@ def test_fetch_prices_prod_derives_from_stored_source_artifact(monkeypatch: pyte
     )
 
     assert result[0]["dataset"] == "prices"
+    assert result[0]["date"] == "2026-04-02"
+    assert "end_date" not in result[0]
     assert result[0]["requested_period"] == "day"
     assert result[0]["bar_granularity"] == "day"
-    assert result[0]["source_uri"] == "gs://bucket/source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson"
-    assert result[0]["source_object_path"] == "source/prices/granularity=day/end_date=2026-04-02/ticker=AA/wf-123.ndjson"
+    assert result[0]["source_uri"] == "gs://bucket/source/prices/granularity=day/date=2026-04-02/ticker=AA/wf-123.ndjson"
+    assert result[0]["source_object_path"] == "source/prices/granularity=day/date=2026-04-02/ticker=AA/wf-123.ndjson"
     assert result[0]["source_dataset"] == "prices"
     assert result[0]["transform_name"] == activities.PRICES_PROD_TRANSFORM_NAME
     assert result[0]["transform_version"] == activities.PROD_TRANSFORM_VERSION
@@ -908,6 +925,8 @@ def test_fetch_prices_raw_retries_empty_field_responses_once(monkeypatch: pytest
     assert result[0]["provider"] == "lseg"
     assert result[0]["source"] == "lseg"
     assert result[0]["ric"] == "AA.N"
+    assert result[0]["date"] == "2026-04-02"
+    assert "end_date" not in result[0]
     assert result[0]["bar_granularity"] == "day"
     assert result[0]["requested_period"] == "day"
     assert result[0]["record_count"] == 1

@@ -40,7 +40,7 @@ def test_destination_object_path_uses_partitioned_fundamentals_layout() -> None:
         gcs_prefix="",
     )
 
-    assert path == "prod/fundamentals/frequency=FQ/end_date=2025-03-31/ticker=AA/legacy_deadbeefdeadbe.ndjson"
+    assert path == "prod/fundamentals/frequency=FQ/date=2025-03-31/ticker=AA/legacy_deadbeefdeadbe.ndjson"
 
 
 def test_flatten_legacy_source_fundamentals_payload_emits_partitionable_rows() -> None:
