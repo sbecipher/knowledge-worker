@@ -91,6 +91,25 @@ also stored as NDJSON, partitioned by row `period_end_date` under the shared
 every row. For fundamentals, the lake `date` means financial
 `period_end_date`, not the original request filter.
 
+## One-off migrations
+
+- Preview the HNS folder rename from `end_date=` to `date=`:
+
+```bash
+python scripts/rename_prices_end_date_partitions.py \
+  --dry-run \
+  --start-date 2014-10-06 \
+  --end-date 2014-10-10
+```
+
+- Execute the rename after reviewing the local manifest written under `/tmp`:
+
+```bash
+python scripts/rename_prices_end_date_partitions.py \
+  --start-date 2014-10-06 \
+  --end-date 2014-10-10
+```
+
 ## Run the worker
 
 1) Export the required env vars (see above) or use a local `.env`.
