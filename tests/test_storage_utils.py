@@ -70,6 +70,15 @@ def test_artifact_ref_round_trip_payload() -> None:
     assert ArtifactRef(**ref.to_payload()) == ref
 
 
+def test_artifact_ref_schema_uses_explicit_openapi_enums() -> None:
+    schema = ArtifactRef.model_json_schema()
+
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["layer"]["enum"] == ["source", "prod"]
+    assert schema["properties"]["record_count"]["minimum"] == 0
+    assert "example" in schema
+
+
 def test_fundamentals_path_uses_partitioned_layout_and_ndjson_extension() -> None:
     path = build_object_path(
         layer="source",

@@ -5,6 +5,7 @@ Temporal Python worker that orchestrates Marketio API pulls (metadata, EDGAR raw
 This worker now uses:
 
 - A structured workflow request payload instead of positional workflow arguments
+- Pydantic payload models with JSON Schema/OpenAPI-ready contracts
 - Synchronous Temporal activities executed on a worker thread pool
 - Durable artifact references (`gs://...` or local fallback) between stages
 - Independent identifier resolution and metadata persistence
@@ -38,7 +39,7 @@ export TEMP_DIR=tmp
 export UPLOAD_ENABLED=true
 export CLEANUP_LOCAL_ARTIFACTS=true            # optional; remove temp files after successful uploads
 export TEMPORAL_ADDRESS=127.0.0.1:7233
-export TEMPORAL_TASK_QUEUE=market-data-task-queue
+export TEMPORAL_TASK_QUEUE=marketio-task-queue
 export LOG_LEVEL=INFO
 export HEALTHCHECK_PORT=8080                    # optional; defaults to PORT when set
 export ACTIVITY_EXECUTOR_THREADS=16             # optional; sync activity thread pool size

@@ -38,6 +38,7 @@ LONG_RETRY = RetryPolicy(
     maximum_interval=timedelta(seconds=120),
     maximum_attempts=3,
 )
+SIDE_EFFECT_HEARTBEAT_TIMEOUT = timedelta(minutes=2)
 
 
 def _error_result(exc: Exception) -> Dict[str, str]:
@@ -161,7 +162,14 @@ class MarketDataWorkflow:
     @workflow.run
     async def run(self, request_payload: Dict[str, Any]) -> Dict[str, Any]:
         _reject_legacy_payload_fields(request_payload)
-        request = MarketDataRequest.from_payload(request_payload)
+        try:
+            request = MarketDataRequest.from_payload(request_payload)
+        except ValueError as exc:
+            raise ApplicationError(
+                str(exc),
+                type="InvalidRequest",
+                non_retryable=True,
+            ) from exc
         _validate_request(request)
 
         info = workflow.info()
@@ -171,6 +179,20 @@ class MarketDataWorkflow:
             workflow_run_id=info.run_id,
         )
         execution_payload = execution.to_payload()
+        use_artifact_partition_date = workflow.patched("artifact-partition-date-heartbeats-v1")
+        artifact_execution_payload = (
+            {
+                **execution_payload,
+                "artifact_partition_date": workflow.now().date().isoformat(),
+            }
+            if use_artifact_partition_date
+            else execution_payload
+        )
+        side_effect_activity_options = (
+            {"heartbeat_timeout": SIDE_EFFECT_HEARTBEAT_TIMEOUT}
+            if use_artifact_partition_date
+            else {}
+        )
 
         await workflow.execute_activity(
             CHECK_MARKETIO_HEALTH,
@@ -278,9 +300,10 @@ class MarketDataWorkflow:
                 )
             metadata_summary = await workflow.execute_activity(
                 PERSIST_COMPANY_METADATA,
-                args=[identifier_resolution, request.universe_key, execution_payload],
+                args=[identifier_resolution, request.universe_key, artifact_execution_payload],
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=LONG_RETRY,
+                **side_effect_activity_options,
             )
             if isinstance(metadata_summary, dict):
                 metadata_refs = metadata_summary.get("artifacts_by_ticker") or {}
@@ -343,6 +366,7 @@ class MarketDataWorkflow:
                 args=[artifact_refs, request.universe_key, execution_payload],
                 start_to_close_timeout=timedelta(minutes=5),
                 retry_policy=LONG_RETRY,
+                **side_effect_activity_options,
             )
             if isinstance(manifest_summary, dict):
                 results["manifests"] = {
@@ -378,10 +402,11 @@ class MarketDataWorkflow:
                         edgar_kwargs.get("tickers"),
                         edgar_kwargs.get("ciks"),
                         request.universe_key,
-                        execution_payload,
+                        artifact_execution_payload,
                     ],
                     start_to_close_timeout=timedelta(minutes=3),
                     retry_policy=LONG_RETRY,
+                    **side_effect_activity_options,
                 )
                 if do_edgar
                 else []
@@ -400,6 +425,7 @@ class MarketDataWorkflow:
                     ],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
+                    **side_effect_activity_options,
                 )
                 if do_fundamentals
                 else []
@@ -412,6 +438,7 @@ class MarketDataWorkflow:
                     args=[fundamentals_raw, request.universe_key, execution_payload],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
+                    **side_effect_activity_options,
                 )
             else:
                 fundamentals_prod = []
@@ -435,6 +462,7 @@ class MarketDataWorkflow:
                     ],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
+                    **side_effect_activity_options,
                 )
                 if do_market
                 else []
@@ -450,6 +478,7 @@ class MarketDataWorkflow:
                     ],
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=LONG_RETRY,
+                    **side_effect_activity_options,
                 )
             else:
                 prices_prod = []

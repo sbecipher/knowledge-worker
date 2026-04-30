@@ -1,4 +1,7 @@
-Place exported Temporal workflow history JSON files in this directory to enable replay testing.
+Recorded Temporal workflow history JSON files in this directory are replayed in CI.
+Keep at least one fixture here so replay coverage cannot silently disappear.
+
+Add exported production histories here when workflow command shapes change.
 
 Supported fixture formats:
 

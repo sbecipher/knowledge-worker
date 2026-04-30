@@ -8,12 +8,15 @@ from temporalio.exceptions import ApplicationError
 import activities
 
 
-def _execution_payload() -> Dict[str, str]:
-    return {
+def _execution_payload(artifact_partition_date: str | None = None) -> Dict[str, str]:
+    payload = {
         "request_id": "req-123",
         "workflow_id": "wf-123",
         "workflow_run_id": "run-123",
     }
+    if artifact_partition_date is not None:
+        payload["artifact_partition_date"] = artifact_partition_date
+    return payload
 
 
 def test_required_ticker_raises_non_retryable_error() -> None:
@@ -138,7 +141,7 @@ def test_persist_company_metadata_writes_per_ticker_artifact_without_manifest(
         return f"gs://bucket/{object_path}"
 
     monkeypatch.setattr(activities.UPLOADER, "upload_file", fake_upload)
-    monkeypatch.setattr(activities, "_current_end_date", lambda: "2026-04-09")
+    monkeypatch.setattr(activities, "_current_end_date", lambda: "1999-01-01")
 
     result = activities.persist_company_metadata(
         {
@@ -165,7 +168,7 @@ def test_persist_company_metadata_writes_per_ticker_artifact_without_manifest(
             "universe_key": "mmh5r1",
         },
         universe_key="mmh5r1",
-        execution=_execution_payload(),
+        execution=_execution_payload("2026-04-09"),
     )
 
     assert result["persisted_tickers"] == ["AA"]
@@ -529,13 +532,13 @@ def test_fetch_edgar_source_uses_current_route(monkeypatch: pytest.MonkeyPatch) 
         return f"gs://bucket/{object_path}"
 
     monkeypatch.setattr(activities, "_post_json", fake_post)
-    monkeypatch.setattr(activities, "_current_end_date", lambda: "2026-04-09")
+    monkeypatch.setattr(activities, "_current_end_date", lambda: "1999-01-01")
     monkeypatch.setattr(activities.UPLOADER, "upload_file", fake_upload)
 
     result = activities.fetch_edgar_source(
         tickers=["AA"],
         universe_key="mmh5r1",
-        execution=_execution_payload(),
+        execution=_execution_payload("2026-04-09"),
     )
 
     assert captured_calls == [(activities.MARKETIO_ROUTE_EDGAR_RAW, {"ticker": "AA"})]

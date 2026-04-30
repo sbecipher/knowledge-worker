@@ -95,6 +95,44 @@ def test_market_data_request_defaults_day_period() -> None:
     assert request.period == "day"
 
 
+def test_market_data_request_normalizes_payload_for_openapi_contract() -> None:
+    request = MarketDataRequest.from_payload(
+        {
+            "universe_key": " MMH5R1 ",
+            "tickers": [" aa ", "", "nue"],
+            "metadata_only": True,
+            "fundamentals_mode": None,
+            "market_mode": None,
+            "max_concurrent_tickers": 0,
+        }
+    )
+
+    assert request.universe_key == "MMH5R1"
+    assert request.tickers == ["AA", "NUE"]
+    assert request.metadata_mode == "source"
+    assert request.fundamentals_mode == "prod"
+    assert request.market_mode == "prod"
+    assert request.max_concurrent_tickers == 1
+
+
+def test_market_data_request_rejects_non_openapi_payload_shape() -> None:
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        MarketDataRequest.from_payload({"tickers": ["AA"], "unknown": True})
+
+    with pytest.raises(ValueError, match="tickers must be an array of strings"):
+        MarketDataRequest.from_payload({"tickers": "AA"})
+
+
+def test_market_data_request_schema_is_openapi_ready() -> None:
+    schema = MarketDataRequest.model_json_schema()
+
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["tickers"]["type"] == "array"
+    assert schema["properties"]["max_concurrent_tickers"]["minimum"] == 1
+    assert "example" in schema
+
+
 def test_validate_request_rejects_unknown_period() -> None:
     request = MarketDataRequest(
         universe_key="mmh5r1",

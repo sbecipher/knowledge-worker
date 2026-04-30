@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 DEFAULT_PERIOD = "day"
@@ -16,70 +17,134 @@ def normalize_period(value: Any) -> str:
     return text or DEFAULT_PERIOD
 
 
-@dataclass(frozen=True)
-class MarketDataRequest:
-    universe_key: Optional[str]
-    tickers: List[str]
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    as_of_date: Optional[str] = None
-    period: str = DEFAULT_PERIOD
-    fundamentals_mode: str = DEFAULT_FUNDAMENTALS_MODE
-    market_mode: str = DEFAULT_MARKET_MODE
-    metadata_mode: str = DEFAULT_METADATA_MODE
-    edgar_source: bool = False
-    metadata_only: bool = False
-    edgar_only: bool = False
-    request_id: Optional[str] = None
-    max_concurrent_tickers: int = DEFAULT_MAX_CONCURRENT_TICKERS
+class PayloadModel(BaseModel):
+    """Base for Temporal payload models that also emit OpenAPI-ready JSON Schema."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        populate_by_name=True,
+    )
+
+    def to_payload(self) -> Dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+class MarketDataRequest(PayloadModel):
+    universe_key: Optional[str] = Field(default=None, description="Universe key used for active-universe lookups.")
+    tickers: List[str] = Field(
+        default_factory=list,
+        description="Ticker symbols to process. Empty means load the active universe.",
+    )
+    start_date: Optional[str] = Field(default=None, description="Inclusive fundamentals start date in YYYY-MM-DD.")
+    end_date: Optional[str] = Field(default=None, description="Inclusive fundamentals end date in YYYY-MM-DD.")
+    as_of_date: Optional[str] = Field(default=None, description="Market data date in YYYY-MM-DD.")
+    period: str = Field(default=DEFAULT_PERIOD, description="Requested market data period.")
+    fundamentals_mode: str = Field(default=DEFAULT_FUNDAMENTALS_MODE, description="Fundamentals processing mode.")
+    market_mode: str = Field(default=DEFAULT_MARKET_MODE, description="Market data processing mode.")
+    metadata_mode: str = Field(default=DEFAULT_METADATA_MODE, description="Company metadata persistence mode.")
+    edgar_source: bool = Field(default=False, description="Fetch EDGAR source artifacts alongside other work.")
+    metadata_only: bool = Field(default=False, description="Persist metadata without prices or fundamentals.")
+    edgar_only: bool = Field(default=False, description="Fetch only EDGAR source artifacts.")
+    request_id: Optional[str] = Field(default=None, description="Optional caller-provided request identifier.")
+    max_concurrent_tickers: int = Field(
+        default=DEFAULT_MAX_CONCURRENT_TICKERS,
+        ge=1,
+        description="Maximum number of tickers processed concurrently by the workflow.",
+    )
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "example": {
+                "universe_key": "mmh5r1",
+                "tickers": ["AA", "NUE"],
+                "start_date": "2026-01-01",
+                "end_date": "2026-03-31",
+                "as_of_date": "2026-04-02",
+                "period": "day",
+                "fundamentals_mode": "prod",
+                "market_mode": "prod",
+                "metadata_mode": "none",
+            }
+        },
+        populate_by_name=True,
+    )
+
+    @field_validator("universe_key", "start_date", "end_date", "as_of_date", "request_id", mode="before")
+    @classmethod
+    def _normalize_optional_str(cls, value: Any) -> Optional[str]:
+        return _optional_str(value)
+
+    @field_validator("tickers", mode="before")
+    @classmethod
+    def _normalize_tickers(cls, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("tickers must be an array of strings")
+        return [ticker for ticker in (str(item).strip().upper() for item in value) if ticker]
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _normalize_period(cls, value: Any) -> str:
+        return normalize_period(value)
+
+    @field_validator("fundamentals_mode", mode="before")
+    @classmethod
+    def _normalize_fundamentals_mode(cls, value: Any) -> str:
+        return str(value or DEFAULT_FUNDAMENTALS_MODE).strip().lower()
+
+    @field_validator("market_mode", mode="before")
+    @classmethod
+    def _normalize_market_mode(cls, value: Any) -> str:
+        return str(value or DEFAULT_MARKET_MODE).strip().lower()
+
+    @field_validator("metadata_mode", mode="before")
+    @classmethod
+    def _normalize_metadata_mode(cls, value: Any) -> str:
+        return str(value or DEFAULT_METADATA_MODE).strip().lower()
+
+    @field_validator("max_concurrent_tickers", mode="before")
+    @classmethod
+    def _normalize_max_concurrent_tickers(cls, value: Any) -> int:
+        if value in (None, ""):
+            return DEFAULT_MAX_CONCURRENT_TICKERS
+        return max(1, int(value))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _metadata_only_requests_source_metadata(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        metadata_only = data.get("metadata_only", False)
+        if isinstance(metadata_only, str):
+            metadata_only = metadata_only.strip().lower() in {"true", "1", "yes", "y", "on"}
+        if metadata_only:
+            return {**data, "metadata_mode": "source"}
+        return data
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any]) -> "MarketDataRequest":
-        metadata_only = bool(payload.get("metadata_only", False))
-        metadata_mode = str(payload.get("metadata_mode") or DEFAULT_METADATA_MODE).strip().lower()
-        if metadata_only:
-            metadata_mode = "source"
-        return cls(
-            universe_key=_optional_str(payload.get("universe_key")),
-            tickers=[str(ticker).strip().upper() for ticker in payload.get("tickers", []) if str(ticker).strip()],
-            start_date=_optional_str(payload.get("start_date")),
-            end_date=_optional_str(payload.get("end_date")),
-            as_of_date=_optional_str(payload.get("as_of_date")),
-            period=normalize_period(payload.get("period")),
-            fundamentals_mode=str(payload.get("fundamentals_mode") or DEFAULT_FUNDAMENTALS_MODE).strip().lower(),
-            market_mode=str(payload.get("market_mode") or DEFAULT_MARKET_MODE).strip().lower(),
-            metadata_mode=metadata_mode,
-            edgar_source=bool(payload.get("edgar_source", False)),
-            metadata_only=metadata_only,
-            edgar_only=bool(payload.get("edgar_only", False)),
-            request_id=_optional_str(payload.get("request_id")),
-            max_concurrent_tickers=max(1, int(payload.get("max_concurrent_tickers") or DEFAULT_MAX_CONCURRENT_TICKERS)),
-        )
-
-    def to_payload(self) -> Dict[str, Any]:
-        return asdict(self)
+        return cls.model_validate(payload)
 
 
-@dataclass(frozen=True)
-class ExecutionMetadata:
-    request_id: str
-    workflow_id: str
-    workflow_run_id: str
-
-    def to_payload(self) -> Dict[str, str]:
-        return asdict(self)
+class ExecutionMetadata(PayloadModel):
+    request_id: str = Field(min_length=1)
+    workflow_id: str = Field(min_length=1)
+    workflow_run_id: str = Field(min_length=1)
 
 
-@dataclass(frozen=True)
-class ArtifactRef:
-    uri: str
-    object_path: str
-    layer: str
-    dataset: str
-    universe_key: str
-    request_id: str
-    workflow_id: str
-    workflow_run_id: str
+class ArtifactRef(PayloadModel):
+    uri: str = Field(min_length=1)
+    object_path: str = Field(min_length=1)
+    layer: Literal["source", "prod"]
+    dataset: str = Field(min_length=1)
+    universe_key: str = Field(min_length=1)
+    request_id: str = Field(min_length=1)
+    workflow_id: str = Field(min_length=1)
+    workflow_run_id: str = Field(min_length=1)
     ticker: Optional[str] = None
     start_date: Optional[str] = None
     date: Optional[str] = None
@@ -93,7 +158,7 @@ class ArtifactRef:
     request_period: Optional[str] = None
     request_currency: Optional[str] = None
     request_scale: Optional[int] = None
-    record_count: int = 0
+    record_count: int = Field(default=0, ge=0)
     local_path: Optional[str] = None
     provider: Optional[str] = None
     source: Optional[str] = None
@@ -111,8 +176,26 @@ class ArtifactRef:
     transform_name: Optional[str] = None
     transform_version: Optional[str] = None
 
-    def to_payload(self) -> Dict[str, Any]:
-        return asdict(self)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "example": {
+                "uri": "gs://bucket/source/prices/granularity=day/date=2026-04-02/ticker=AA/wf-123.ndjson",
+                "object_path": "source/prices/granularity=day/date=2026-04-02/ticker=AA/wf-123.ndjson",
+                "layer": "source",
+                "dataset": "prices",
+                "universe_key": "mmh5r1",
+                "request_id": "req-123",
+                "workflow_id": "wf-123",
+                "workflow_run_id": "run-123",
+                "ticker": "AA",
+                "date": "2026-04-02",
+                "record_count": 25,
+            }
+        },
+        populate_by_name=True,
+    )
 
 
 def _optional_str(value: Any) -> Optional[str]:

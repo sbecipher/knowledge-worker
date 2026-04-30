@@ -422,6 +422,24 @@ def _first_non_empty(*values: Any) -> Any:
     return None
 
 
+def _artifact_partition_date_from_execution(payload: Optional[Dict[str, Any]]) -> str:
+    partition_date = None
+    if isinstance(payload, dict):
+        partition_date = _first_non_empty(
+            payload.get("artifact_partition_date"),
+            payload.get("partition_date"),
+        )
+    if partition_date is None:
+        return _current_end_date()
+    try:
+        return format_iso_date(partition_date)
+    except ValueError as exc:
+        raise _non_retryable(
+            "artifact_partition_date must be YYYY-MM-DD",
+            type_name="ExecutionMetadataError",
+        ) from exc
+
+
 def _clean_dict_none_values(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
@@ -687,6 +705,9 @@ def _fetch_market_daily_raw_with_empty_retry(
 ) -> List[Dict[str, Any]]:
     last_artifacts: List[Dict[str, Any]] = []
     for attempt in range(1, 3):
+        _activity_heartbeat(
+            {"stage": "prices_raw_request", "ticker": ticker, "attempt": attempt}
+        )
         response = _post_json(MARKETIO_ROUTE_MARKET_DAILY_RAW, payload)
         artifacts = _artifact_list(response)
         last_artifacts = artifacts
@@ -1027,6 +1048,13 @@ def _save_price_artifacts(
         if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
             local_path.unlink(missing_ok=True)
             ref = ArtifactRef(**{**ref.to_payload(), "local_path": None})
+        _activity_heartbeat(
+            {
+                "stage": f"prices_{layer}_saved",
+                "ticker": ticker,
+                "count": len(grouped_payload["rows"]),
+            }
+        )
         logger.info(
             "%s artifact_saved uri=%s object_path=%s",
             _log_prefix(execution, f"prices_{layer}", ticker),
@@ -1343,6 +1371,14 @@ def _save_fundamentals_artifacts(
         if SETTINGS.cleanup_local_artifacts and UPLOADER.enabled:
             local_path.unlink(missing_ok=True)
             ref = ArtifactRef(**{**ref.to_payload(), "local_path": None})
+        _activity_heartbeat(
+            {
+                "stage": f"fundamentals_{layer}_saved",
+                "ticker": ticker,
+                "date": grouped_payload["date"],
+                "count": len(grouped_payload["rows"]),
+            }
+        )
         logger.info(
             "%s artifact_saved uri=%s object_path=%s",
             _log_prefix(execution, f"fundamentals_{layer}", ticker),
@@ -1531,6 +1567,12 @@ def _save_artifacts(
                     exc,
                 )
 
+        _activity_heartbeat(
+            {
+                "stage": f"{dataset}_{layer}_saved",
+                "ticker": str(ticker).upper() if ticker else None,
+            }
+        )
         logger.info(
             "%s artifact_saved uri=%s object_path=%s",
             _log_prefix(execution, f"{dataset}_{layer}", ticker or None),
@@ -1549,6 +1591,7 @@ def check_marketio_health(execution: Dict[str, Any]) -> None:
     base_url = SETTINGS.marketio_api_url.rstrip("/")
     url = f"{base_url}/health"
     headers = _marketio_auth_headers(base_url)
+    _activity_heartbeat({"stage": "healthcheck_start"})
     with _make_client(headers=headers) as client:
         response = client.get(url)
         if response.status_code in {401, 403} and SETTINGS.marketio_require_auth:
@@ -1570,6 +1613,7 @@ def load_active_universe_index(
         raise RuntimeError("load_active_universe_index cancelled")
     execution_meta = _execution_metadata_from_payload(execution)
     resolved_universe_key = _resolve_universe_key(universe_key)
+    _activity_heartbeat({"stage": "active_universe_load", "universe_key": resolved_universe_key})
     index = _active_universe_index_payload(resolved_universe_key)
     logger.info(
         "%s active_universe_loaded active_object_path=%s record_count=%s",
@@ -1600,6 +1644,12 @@ def resolve_company_identifiers(
         raise RuntimeError("resolve_company_identifiers cancelled")
     execution_meta = _execution_metadata_from_payload(execution)
     resolved_universe_key = _resolve_universe_key(universe_key)
+    _activity_heartbeat(
+        {
+            "stage": "identifier_active_universe_load",
+            "universe_key": resolved_universe_key,
+        }
+    )
     active_index = _active_universe_index_payload(resolved_universe_key)
     active_rows_by_ticker = active_index["rows_by_ticker"]
 
@@ -1612,6 +1662,9 @@ def resolve_company_identifiers(
             type_name="ArtifactValidationError",
         )
 
+    _activity_heartbeat(
+        {"stage": "identifier_provider_request", "count": len(requested_tickers)}
+    )
     data = _post_json(MARKETIO_ROUTE_COMPANIES, {"tickers": requested_tickers})
     if isinstance(data, list):
         metadata_rows = [item for item in data if isinstance(item, dict)]
@@ -1707,7 +1760,7 @@ def persist_company_metadata(
         raise _non_retryable("Identifier resolution payload must be a dict", type_name="ArtifactValidationError")
 
     resolved_universe_key = _resolve_universe_key(universe_key or identifier_resolution.get("universe_key"))
-    metadata_end_date = _current_end_date()
+    metadata_end_date = _artifact_partition_date_from_execution(execution)
     rows_by_ticker = identifier_resolution.get("rows_by_ticker")
     if not isinstance(rows_by_ticker, dict) or not rows_by_ticker:
         raise _non_retryable(
@@ -1720,6 +1773,7 @@ def persist_company_metadata(
     artifacts_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
     persisted_tickers: List[str] = []
     for ticker in _normalized_ticker_list(list(rows_by_ticker.keys())):
+        _activity_heartbeat({"stage": "metadata_source_save", "ticker": ticker})
         row = rows_by_ticker.get(ticker)
         if not isinstance(row, dict):
             continue
@@ -1785,6 +1839,7 @@ def persist_company_metadata(
             ref = ArtifactRef(**{**ref.to_payload(), "local_path": None})
         artifacts_by_ticker[ticker] = [ref.to_payload()]
         persisted_tickers.append(ticker)
+        _activity_heartbeat({"stage": "metadata_source_saved", "ticker": ticker})
         logger.info(
             "%s metadata_source_saved uri=%s object_path=%s",
             _log_prefix(execution_meta, "metadata_source", ticker),
@@ -1837,6 +1892,7 @@ def persist_layer_manifests(
 
     manifest_count = 0
     for (layer, partition_date), grouped_payload in sorted(grouped_artifacts.items()):
+        _activity_heartbeat({"stage": "manifest_save", "layer": layer, "date": partition_date})
         ordered_artifacts = sorted(
             grouped_payload,
             key=lambda artifact: (
@@ -1890,6 +1946,7 @@ def persist_layer_manifests(
             )
         )
         manifest_count += 1
+        _activity_heartbeat({"stage": "manifest_saved", "layer": layer, "date": partition_date})
         logger.info(
             "%s manifest_saved uri=%s object_path=%s artifact_count=%s",
             _log_prefix(execution_meta, f"{layer}_manifest"),
@@ -1917,10 +1974,11 @@ def fetch_companies_metadata(
         include_metadata_rows=True,
         execution=execution,
     )
+    partition_date = _artifact_partition_date_from_execution(execution)
     persisted = persist_company_metadata(
         identifier_resolution=identifier_resolution,
         universe_key=universe_key,
-        execution=execution,
+        execution={**(execution or {}), "artifact_partition_date": partition_date},
     )
     artifacts: List[Dict[str, Any]] = []
     for artifact_group in persisted.get("artifacts_by_ticker", {}).values():
@@ -1967,9 +2025,10 @@ def fetch_edgar_source(
     if not requests:
         raise _non_retryable("At least one ticker or CIK must be provided", type_name="ArtifactValidationError")
 
-    edgar_end_date = _current_end_date()
+    edgar_end_date = _artifact_partition_date_from_execution(execution)
     active_source_lineage = _active_source_lineage(universe_key)
     payload: Any = requests[0] if len(requests) == 1 else requests
+    _activity_heartbeat({"stage": "edgar_request", "requested": len(requests)})
     raw_response = _post_json(MARKETIO_ROUTE_EDGAR_RAW, payload)
     responses: List[Any] = raw_response if isinstance(raw_response, list) else [raw_response]
 
@@ -1983,6 +2042,13 @@ def fetch_edgar_source(
 
     artifacts: List[dict] = []
     for idx, response in enumerate(responses):
+        _activity_heartbeat(
+            {
+                "stage": "edgar_response_normalize",
+                "index": idx + 1,
+                "count": len(responses),
+            }
+        )
         request_meta = requests[idx] if idx < len(requests) else {}
         artifact: Dict[str, Any] = dict(response) if isinstance(response, dict) else {"payload": response}
 
@@ -2029,6 +2095,7 @@ def fetch_fundamentals_raw(
     execution_meta = _execution_metadata_from_payload(execution)
     payload = _identifier_payload(ticker=ticker, ric=ric)
     payload.update({"start_date": start_date, "end_date": end_date})
+    _activity_heartbeat({"stage": "fundamentals_raw_request", "ticker": ticker})
     data = _post_json(MARKETIO_ROUTE_FUNDAMENTALS_RAW, payload)
     artifacts = _artifact_list(data)
     _activity_heartbeat({"count": len(artifacts)})
@@ -2065,6 +2132,7 @@ def fetch_fundamentals_prod(
     results: List[dict] = []
     for artifact_ref in raw_artifacts:
         ticker = _required_ticker(artifact_ref, "raw fundamentals")
+        _activity_heartbeat({"stage": "fundamentals_prod_load_source", "ticker": ticker})
         source_rows = _load_artifact_payload(
             artifact_ref,
             warning_prefix=f"Unable to load raw fundamentals artifact for ticker={ticker}",
@@ -2131,6 +2199,7 @@ def fetch_prices_raw(
     execution: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     execution_meta = _execution_metadata_from_payload(execution)
+    _activity_heartbeat({"stage": "prices_raw_resolve_window", "ticker": ticker})
     window = _resolve_market_window(period=period, as_of_date=as_of_date, exchange_code=exchange_code)
     payload = _identifier_payload(ticker=ticker, ric=ric)
     payload.update(
@@ -2175,6 +2244,7 @@ def fetch_prices_prod(
     results: List[dict] = []
     for artifact_ref in raw_artifacts:
         ticker = _required_ticker(artifact_ref, "raw prices")
+        _activity_heartbeat({"stage": "prices_prod_load_source", "ticker": ticker})
         start_date = artifact_ref.get("effective_start_date") or artifact_ref.get("start_date")
         partition_date = artifact_ref.get("date") or artifact_ref.get("effective_end_date")
         source_rows = _load_artifact_payload(
