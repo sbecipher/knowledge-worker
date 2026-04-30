@@ -115,3 +115,16 @@ def test_prices_path_uses_partitioned_layout_and_ndjson_extension() -> None:
         effective_end_date="2024-01-31",
     )
     assert path == "source/prices/granularity=day/date=2024-01-31/ticker=AA/wf-123.ndjson"
+
+
+def test_prod_prices_path_uses_canonical_eod_parquet_layout() -> None:
+    path = build_object_path(
+        layer="prod",
+        dataset="prices",
+        universe_key="mmh5r1",
+        ticker="AA",
+        suffix="wf-123-AA",
+        bar_granularity="day",
+        effective_end_date="2024-01-31",
+    )
+    assert path == "prod/prices/eod/v1/date=2024-01-31/part-00000-wf-123-AA.snappy.parquet"

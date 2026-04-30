@@ -17,6 +17,7 @@ from temporalio.exceptions import ApplicationError
 
 from config import load_settings
 from models import ArtifactRef, ExecutionMetadata
+from price_lake import canonical_price_eod_rows, write_price_eod_parquet
 from storage_utils import (
     GCSUploader,
     build_active_universe_object_path,
@@ -25,6 +26,7 @@ from storage_utils import (
     ensure_dir,
     format_date,
     format_iso_date,
+    sanitize_path_segment,
     write_ndjson,
     write_json,
 )
@@ -140,9 +142,13 @@ def _log_prefix(execution: ExecutionMetadata, stage: str, ticker: Optional[str] 
     return " ".join(parts)
 
 
-def _resolve_universe_key(universe_key: Optional[str]) -> str:
+def _normalize_universe_key(universe_key: Optional[str]) -> Optional[str]:
     value = (universe_key or "").strip()
-    return value.lower() if value else SETTINGS.universe_key
+    return value.lower() if value else None
+
+
+def _resolve_universe_key(universe_key: Optional[str]) -> str:
+    return _normalize_universe_key(universe_key) or SETTINGS.universe_key
 
 
 def _metadata_base(
@@ -155,16 +161,17 @@ def _metadata_base(
     freq: Optional[str],
     universe_key: Optional[str] = None,
 ) -> Dict[str, str]:
-    resolved_universe_key = _resolve_universe_key(universe_key)
     meta = {
         "layer": layer,
         "dataset": dataset,
-        "universe_key": resolved_universe_key,
         "request_id": execution.request_id,
         "workflow_id": execution.workflow_id,
         "workflow_run_id": execution.workflow_run_id,
         "source": "marketio-api",
     }
+    resolved_universe_key = _normalize_universe_key(universe_key)
+    if resolved_universe_key is not None:
+        meta["universe_key"] = resolved_universe_key
     if ticker:
         meta["ticker"] = ticker.upper()
     if start:
@@ -218,7 +225,7 @@ def _validated_manifest_artifact(
     artifact: Dict[str, Any],
     *,
     execution: ExecutionMetadata,
-    universe_key: str,
+    universe_key: Optional[str],
 ) -> Dict[str, Any]:
     if not isinstance(artifact, dict):
         raise _non_retryable("Manifest artifact payload must be a dict", type_name="ArtifactValidationError")
@@ -260,8 +267,9 @@ def _validated_manifest_artifact(
         "request_id": execution.request_id,
         "workflow_id": execution.workflow_id,
         "workflow_run_id": execution.workflow_run_id,
-        "universe_key": universe_key,
     }
+    if universe_key is not None:
+        expected_fields["universe_key"] = universe_key
     actual_fields = {
         "request_id": artifact_request_id,
         "workflow_id": artifact_workflow_id,
@@ -813,7 +821,7 @@ def _price_row_base(
     *,
     artifact: Dict[str, Any],
     ticker: str,
-    universe_key: str,
+    universe_key: Optional[str],
     execution: ExecutionMetadata,
     requested_period: str,
     as_of_date: str,
@@ -827,12 +835,13 @@ def _price_row_base(
         "effective_start_date": effective_start_date,
         "effective_end_date": effective_end_date,
         "bar_granularity": artifact.get("bar_granularity") or MARKET_BAR_GRANULARITY_DAY,
-        "universe_key": universe_key,
         "workflow_id": execution.workflow_id,
         "workflow_run_id": execution.workflow_run_id,
         "request_id": execution.request_id,
         "source_system": "marketio",
     }
+    if universe_key is not None:
+        row["universe_key"] = universe_key
     provider = _optional_str(artifact.get("provider")) or _optional_str(artifact.get("source")) or MARKETIO_MARKET_SOURCE_LSEG
     row["provider"] = provider
     frequency = _optional_str(artifact.get("frequency")) or MARKETIO_MARKET_FREQUENCY_DAILY
@@ -873,7 +882,7 @@ def _legacy_stock_price_fields(raw_row: Dict[str, Any]) -> Dict[str, Any]:
 def _flatten_price_rows(
     artifact: Dict[str, Any],
     *,
-    universe_key: str,
+    universe_key: Optional[str],
     execution: ExecutionMetadata,
 ) -> List[Dict[str, Any]]:
     ticker = _price_artifact_ticker(artifact)
@@ -898,9 +907,9 @@ def _flatten_price_rows(
         instrument = _optional_str(
             _first_non_empty(
                 artifact.get("instrument"),
-                artifact.get("ticker"),
                 artifact.get("primary_ric"),
                 artifact.get("ric"),
+                artifact.get("ticker"),
             )
         )
         for raw_row in stock_prices:
@@ -941,7 +950,7 @@ def _save_price_artifacts(
     execution: ExecutionMetadata,
     universe_key: Optional[str] = None,
 ) -> List[dict]:
-    resolved_universe_key = _resolve_universe_key(universe_key)
+    resolved_universe_key = _normalize_universe_key(universe_key)
     grouped: Dict[str, Dict[str, Any]] = {}
     for artifact in artifacts:
         ticker = _price_artifact_ticker(artifact)
@@ -979,13 +988,50 @@ def _save_price_artifacts(
             dataset="prices",
             universe_key=resolved_universe_key,
             ticker=ticker,
-            suffix=execution.workflow_id,
+            suffix=(
+                execution.workflow_id
+                if layer != "prod"
+                else f"part-00000-{execution.workflow_id}-{sanitize_path_segment(ticker)}"
+            ),
             bar_granularity=str(grouped_payload["bar_granularity"]),
             effective_end_date=str(grouped_payload["effective_end_date"]),
             prefix=SETTINGS.gcs_prefix,
         )
         local_path = _temp_path(object_path)
-        write_ndjson(local_path, grouped_payload["rows"])
+        if layer == "prod":
+            parquet_rows = canonical_price_eod_rows(
+                grouped_payload["rows"],
+                context={
+                    "ticker": ticker,
+                    "date": grouped_payload["date"],
+                    "bar_granularity": grouped_payload["bar_granularity"],
+                    "requested_period": grouped_payload["requested_period"],
+                    "effective_start_date": grouped_payload["effective_start_date"],
+                    "effective_end_date": grouped_payload["effective_end_date"],
+                    "provider": grouped_payload.get("provider"),
+                    "source": grouped_payload.get("source"),
+                    "ric": grouped_payload.get("ric"),
+                    "primary_ric": grouped_payload.get("primary_ric"),
+                    "organization_id": grouped_payload.get("organization_id"),
+                    "cik_number": grouped_payload.get("cik_number"),
+                    "source_uri": grouped_payload.get("source_uri"),
+                    "source_object_uri": grouped_payload.get("source_uri"),
+                    "source_object_path": grouped_payload.get("source_object_path"),
+                    "source_dataset": grouped_payload.get("source_dataset") or "prices",
+                    "transform_name": grouped_payload.get("transform_name"),
+                    "transform_version": grouped_payload.get("transform_version"),
+                    "run_id": execution.workflow_id,
+                    "workflow_id": execution.workflow_id,
+                    "workflow_run_id": execution.workflow_run_id,
+                    "request_id": execution.request_id,
+                    "universe_key": resolved_universe_key,
+                    "source_system": "marketio",
+                    "frequency": MARKETIO_MARKET_FREQUENCY_DAILY,
+                },
+            )
+            write_price_eod_parquet(local_path, parquet_rows)
+        else:
+            write_ndjson(local_path, grouped_payload["rows"])
         meta = _metadata_base(
             layer,
             "prices",
@@ -1145,13 +1191,12 @@ def _fundamentals_request_context(artifact: Dict[str, Any]) -> Dict[str, Any]:
 def _fundamentals_row_base(
     *,
     ticker: str,
-    universe_key: str,
+    universe_key: Optional[str],
     execution: ExecutionMetadata,
     request_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     row = {
         "ticker": ticker,
-        "universe_key": universe_key,
         "workflow_id": execution.workflow_id,
         "workflow_run_id": execution.workflow_run_id,
         "request_id": execution.request_id,
@@ -1160,6 +1205,8 @@ def _fundamentals_row_base(
         "requested_period": request_context["requested_period"],
         "request_period": request_context["request_period"],
     }
+    if universe_key is not None:
+        row["universe_key"] = universe_key
     for key in (
         "request_start_date",
         "request_end_date",
@@ -1187,7 +1234,7 @@ def _flatten_fundamentals_rows(
     artifact: Dict[str, Any],
     *,
     layer: str,
-    universe_key: str,
+    universe_key: Optional[str],
     execution: ExecutionMetadata,
 ) -> List[Dict[str, Any]]:
     ticker = _required_ticker(artifact, f"{layer} fundamentals")
@@ -1227,7 +1274,7 @@ def _save_fundamentals_artifacts(
     execution: ExecutionMetadata,
     universe_key: Optional[str] = None,
 ) -> List[dict]:
-    resolved_universe_key = _resolve_universe_key(universe_key)
+    resolved_universe_key = _normalize_universe_key(universe_key)
     grouped: Dict[tuple[str, str], Dict[str, Any]] = {}
     for artifact in artifacts:
         ticker = _required_ticker(artifact, f"{layer} fundamentals")
@@ -1416,7 +1463,7 @@ def _save_artifacts(
     freq: Optional[str] = None,
     universe_key: Optional[str] = None,
 ) -> List[dict]:
-    resolved_universe_key = _resolve_universe_key(universe_key)
+    resolved_universe_key = _normalize_universe_key(universe_key)
     summaries: List[dict] = []
     for artifact in artifacts:
         data_items = artifact.get("data")
@@ -1875,7 +1922,7 @@ def persist_layer_manifests(
     execution_meta = _execution_metadata_from_payload(execution)
     if not isinstance(artifacts, list):
         raise _non_retryable("Manifest artifacts payload must be a list", type_name="ArtifactValidationError")
-    resolved_universe_key = _resolve_universe_key(universe_key)
+    resolved_universe_key = _normalize_universe_key(universe_key)
     manifests: Dict[str, List[Dict[str, Any]]] = {"source": [], "prod": []}
     if not artifacts:
         return manifests

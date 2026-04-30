@@ -94,6 +94,20 @@ def build_object_path(
         if not effective_end_date:
             raise ValueError("effective_end_date required for prices path")
         safe_ticker = sanitize_path_segment(ticker.upper())
+        if layer == "prod":
+            file_stem = sanitize_path_segment(suffix)
+            if not file_stem.startswith("part-"):
+                file_stem = f"part-00000-{file_stem}"
+            parts.extend(
+                [
+                    "prices",
+                    "eod",
+                    "v1",
+                    f"date={format_iso_date(effective_end_date)}",
+                    f"{file_stem}.snappy.parquet",
+                ]
+            )
+            return str(PurePosixPath(*parts))
         parts.extend(
             [
                 "prices",
@@ -262,7 +276,12 @@ class GCSUploader:
         blob = self._ensure_bucket().blob(object_path)
         if metadata:
             blob.metadata = metadata
-        blob.content_type = "application/x-ndjson" if object_path.endswith(".ndjson") else "application/json"
+        if object_path.endswith(".ndjson"):
+            blob.content_type = "application/x-ndjson"
+        elif object_path.endswith(".parquet"):
+            blob.content_type = "application/octet-stream"
+        else:
+            blob.content_type = "application/json"
         blob.upload_from_filename(str(local_path))
         uri = f"gs://{self.bucket_name}/{object_path}"
         logger.info("Uploaded %s to %s", local_path, uri)

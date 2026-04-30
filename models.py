@@ -141,7 +141,7 @@ class ArtifactRef(PayloadModel):
     object_path: str = Field(min_length=1)
     layer: Literal["source", "prod"]
     dataset: str = Field(min_length=1)
-    universe_key: str = Field(min_length=1)
+    universe_key: Optional[str] = None
     request_id: str = Field(min_length=1)
     workflow_id: str = Field(min_length=1)
     workflow_run_id: str = Field(min_length=1)

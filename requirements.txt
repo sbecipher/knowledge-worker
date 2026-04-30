@@ -6,3 +6,4 @@ google-cloud-storage-control
 google-cloud-secret-manager
 pandas
 pandas_market_calendars
+pyarrow

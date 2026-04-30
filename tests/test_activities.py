@@ -627,7 +627,6 @@ def test_fetch_fundamentals_raw_partitions_source_rows_by_period_end_date(
     assert source_rows == [
         {
             "ticker": "AA",
-            "universe_key": "mmh5r1",
             "workflow_id": "wf-123",
             "workflow_run_id": "run-123",
             "request_id": "req-123",
@@ -752,7 +751,6 @@ def test_fetch_fundamentals_prod_derives_from_stored_source_artifact(monkeypatch
     assert prod_rows == [
         {
             "ticker": "AA",
-            "universe_key": "mmh5r1",
             "workflow_id": "wf-123",
             "workflow_run_id": "run-123",
             "request_id": "req-123",
@@ -830,6 +828,7 @@ def test_fetch_prices_prod_derives_from_stored_source_artifact(monkeypatch: pyte
     )
 
     assert result[0]["dataset"] == "prices"
+    assert result[0]["object_path"] == "prod/prices/eod/v1/date=2026-04-02/part-00000-wf-123-AA.snappy.parquet"
     assert result[0]["date"] == "2026-04-02"
     assert "end_date" not in result[0]
     assert result[0]["requested_period"] == "day"
@@ -932,7 +931,26 @@ def test_fetch_prices_raw_retries_empty_field_responses_once(monkeypatch: pytest
     assert "end_date" not in result[0]
     assert result[0]["bar_granularity"] == "day"
     assert result[0]["requested_period"] == "day"
+    assert result[0]["universe_key"] is None
     assert result[0]["record_count"] == 1
+
+
+def test_flatten_price_rows_prefers_ric_for_instrument_fallback() -> None:
+    rows = activities._flatten_price_rows(
+        {
+            "ticker": "AA",
+            "primary_ric": "AA.N",
+            "date": "2026-04-02",
+            "effective_start_date": "2026-04-02",
+            "effective_end_date": "2026-04-02",
+            "stock_prices": [{"date": "2026-04-02", "close": 64.08}],
+        },
+        universe_key=None,
+        execution=activities.ExecutionMetadata(**_execution_payload()),
+    )
+
+    assert rows[0]["instrument"] == "AA.N"
+    assert "universe_key" not in rows[0]
 
 
 def test_fetch_prices_raw_raises_retryable_error_after_empty_field_retry(

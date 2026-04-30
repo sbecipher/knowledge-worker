@@ -67,14 +67,15 @@ The worker loads `INTRINIO_API_KEY` from GCP Secret Manager
   - Prod: `prod/fundamentals/frequency=FQ/date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
 - Prices lake layout:
   - Raw: `source/prices/granularity=day/date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
-  - Prod: `prod/prices/granularity=day/date=YYYY-MM-DD/ticker={TICKER}/{workflow_id}.ndjson`
+  - Prod: `prod/prices/eod/v1/date=YYYY-MM-DD/part-*.snappy.parquet`
 - Prod manifests: `prod/manifests/date=YYYY-MM-DD/{workflow_id}.json`
 
 The worker reads `active.json` as the authoritative universe membership input,
 resolves identifiers only when needed, and persists metadata only when
 `metadata_only` or `metadata_mode=source` is requested. `universe_key` is
 required for full-universe, EDGAR, or metadata runs, but explicit-ticker
-prices/fundamentals runs can omit it. For non-EDGAR prices/fundamentals runs,
+prices/fundamentals runs can omit it. When omitted, price/fundamental artifacts
+do not stamp an implicit default `universe_key`. For non-EDGAR prices/fundamentals runs,
 `active.json` is used only for ticker expansion, not as an implicit RIC
 override. Metadata and EDGAR snapshots now follow the same partitioned lake
 layout convention as the other source/prod datasets and carry the active
@@ -85,7 +86,9 @@ contracts: raw files repeat Marketio raw artifact metadata and store
 artifact metadata and store `date`/`instrument` plus the canonical Marketio
 snake_case daily market fields. Both layouts include `requested_period`,
 `as_of_date`, `effective_start_date`, `effective_end_date`, and
-`bar_granularity=day` for BigQuery ingestion. Fundamentals raw/prod files are
+`bar_granularity=day` for BigQuery ingestion. Production prices are written as
+canonical Parquet files under the shared `prod/prices/eod/v1` date partition.
+Fundamentals raw/prod files are
 also stored as NDJSON, partitioned by row `period_end_date` under the shared
 `date=...` key, and repeat request context (`request_start_date`,
 `request_end_date`, `request_period`, `request_currency`, `request_scale`) on
@@ -411,7 +414,7 @@ Functions.
 - `persist_layer_manifests`: Group emitted artifact refs by `(layer, date)` and write consolidated runtime manifests under `{layer}/manifests/date=.../`.
 - `fetch_edgar_source`: Download raw SEC submissions from `/api/v2/edgar/raw` for tickers/CIKs and upload per ticker under the partitioned `source/edgar/` layout, with active-universe lineage attached when `universe_key` is supplied.
 - `fetch_fundamentals_raw` / `fetch_fundamentals_prod`: Pull fundamentals through `/api/v2/fundamentals/raw`, persist partitioned NDJSON under `source/fundamentals/`, then derive partitioned `prod/fundamentals/` artifacts locally from the stored source rows with explicit lineage metadata.
-- `fetch_prices_raw` / `fetch_prices_prod`: Pull market daily raw data from `/api/v2/market/daily/raw`, resolve requested tradable windows from `period` + `as_of_date`, persist NDJSON under `source/prices/`, then derive `prod/prices/` locally from the stored source artifact with explicit lineage metadata.
+- `fetch_prices_raw` / `fetch_prices_prod`: Pull market daily raw data from `/api/v2/market/daily/raw`, resolve requested tradable windows from `period` + `as_of_date`, persist NDJSON under `source/prices/`, then derive canonical Parquet under `prod/prices/eod/v1/` locally from the stored source artifact with explicit lineage metadata.
 
 ## Scripts
 

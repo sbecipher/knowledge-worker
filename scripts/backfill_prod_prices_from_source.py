@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import load_settings
+from price_lake import canonical_price_eod_rows, write_price_eod_parquet
 from storage_utils import build_object_path, sanitize_path_segment
 from transforms.prices import prod_prices_data
 
@@ -324,6 +325,23 @@ def run_backfill(
                 )
                 continue
 
+            canonical_rows = canonical_price_eod_rows(
+                prod_rows,
+                context={
+                    "ticker": info.ticker,
+                    "date": info.date,
+                    "bar_granularity": info.granularity,
+                    "requested_period": REQUESTED_PERIOD,
+                    "effective_start_date": info.date,
+                    "effective_end_date": info.date,
+                    "source_dataset": "prices",
+                    "source_object_uri": f"gs://{settings.gcs_bucket}/{info.object_path}",
+                    "source_object_path": info.object_path,
+                    "run_id": run_id,
+                },
+            )
+            local_path = LOCAL_MANIFEST_DIR / dest_path
+            write_price_eod_parquet(local_path, canonical_rows)
             destination_blob = bucket.blob(dest_path)
             destination_blob.metadata = {
                 "layer": "prod",
@@ -340,11 +358,12 @@ def run_backfill(
                 "transform_version": PROD_TRANSFORM_VERSION,
             }
             try:
-                destination_blob.upload_from_string(
-                    _ndjson_bytes(prod_rows),
-                    content_type="application/x-ndjson",
+                destination_blob.upload_from_filename(
+                    str(local_path),
+                    content_type="application/octet-stream",
                     if_generation_match=0,
                 )
+                local_path.unlink(missing_ok=True)
                 mapping["record_count"] = len(prod_rows)
                 manifest["mappings"].append(mapping)
             except PreconditionFailed:

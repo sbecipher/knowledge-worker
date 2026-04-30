@@ -81,7 +81,7 @@ def test_destination_object_path_uses_prod_prices_layout() -> None:
 
     path = destination_object_path(object_info=info, workflow_id="wf-123__prod", gcs_prefix="")
 
-    assert path == "prod/prices/granularity=day/date=2026-04-07/ticker=AA/wf-123__prod.ndjson"
+    assert path == "prod/prices/eod/v1/date=2026-04-07/part-00000-wf-123__prod.snappy.parquet"
 
 
 def test_flatten_prod_rows_uses_source_prices_rows_and_new_workflow_id() -> None:
