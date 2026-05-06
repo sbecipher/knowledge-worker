@@ -1,7 +1,8 @@
-name: Publish Docker image to GCP Artifact Registry
+name: Build and Push Docker Image to GCP Artifact Registry
 
 on:
   push:
+    branches: ["main"]
     tags:
       - "v*"
 
@@ -51,5 +52,6 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.IMAGE_URI }}:${{ github.ref_name }}
+            ${{ env.IMAGE_URI }}:${{ github.sha }}
             ${{ env.IMAGE_URI }}:latest
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('{0}:{1}', env.IMAGE_URI, github.ref_name) || '' }}
