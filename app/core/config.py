@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     BQ_DATASET: str = "knowledge"
     BQ_TABLE: str = "documents"
     KNOWLEDGEIO_API_URL: str = "http://knowledgeio-api:8000"
+    TEMPORAL_ADDRESS: str = "172.0.0.4:7233"
 
     model_config = {"env_file": ".env"}
 

@@ -11,6 +11,7 @@ from app.activities.ingestion import download_document_to_gcs
 from app.activities.processing import process_document_and_extract_features
 from app.activities.loading import update_knowledge_index
 from app.workflows.ingestion_workflow import KnowledgeIngestionWorkflow
+from app.core.config import settings
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -52,7 +53,8 @@ async def main():
     start_health_server()
 
     # Connect to local Temporal server or use env vars for production
-    temporal_address = os.getenv("TEMPORAL_ADDRESS", "localhost:7233")
+    temporal_address = os.getenv("TEMPORAL_ADDRESS") or settings.TEMPORAL_ADDRESS
+    logging.info("Connecting to Temporal at %s", temporal_address)
     client = await Client.connect(temporal_address)
 
     worker = Worker(
