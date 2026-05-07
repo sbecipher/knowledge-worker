@@ -4,11 +4,11 @@ import io
 import urllib.parse
 from datetime import datetime, timezone
 
-import pandas as pd
+import pandas as pd  # type: ignore
 from temporalio import activity
-from google.cloud import storage
+from google.cloud import storage  # type: ignore
 from google import genai
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.payloads import KnowledgeDocument
 from app.core.config import settings
@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class StandardFeatures(BaseModel):
-    summary: str
-    key_entities: list[str]
-    topics: list[str]
+    summary: str = Field(description="1-2 paragraph executive summary")
+    key_entities: list[str] = Field(description="List of key entities mentioned")
+    topics: list[str] = Field(description="List of main topics covered")
 
 
 GEMINI_PROMPT = """
@@ -86,6 +86,8 @@ async def process_document_and_extract_features(
                 response_schema=StandardFeatures,
             ),
         )
+        if not response.text:
+            raise ValueError("Gemini returned empty response text")
         features = json.loads(response.text)
         validated_features = StandardFeatures(**features)
     except Exception as e:

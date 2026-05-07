@@ -15,6 +15,12 @@ The workflow runs three primary activities:
 
 The service requires Python 3.13 and uses standard libraries including `temporalio`, `google-genai`, `google-cloud-storage`, `google-cloud-documentai`, and `pydantic`.
 
+### Codebase Standards
+The codebase strictly adheres to the following industry standards:
+- **Pydantic & OpenAPI**: All data models (`KnowledgeDocument`, `StandardFeatures`) are rigorously defined using Pydantic V2 with detailed `Field` descriptions for full OpenAPI integration.
+- **Formatting**: The codebase is formatted completely using `black`.
+- **Linting & Typing**: Fully compliant with `flake8` for linting and `mypy` for static type checking.
+
 ### Environment Configuration
 
 The worker configuration is strictly driven by environment variables using Pydantic `BaseSettings`. The defaults are suitable for local development.

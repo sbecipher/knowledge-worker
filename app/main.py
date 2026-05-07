@@ -43,7 +43,10 @@ def start_health_server() -> None:
 
 async def main():
     # Setup logging level from env
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
 
     # Start healthcheck server if configured
     start_health_server()

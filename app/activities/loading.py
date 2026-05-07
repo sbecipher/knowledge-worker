@@ -1,6 +1,6 @@
 import logging
 from temporalio import activity
-from google.cloud import bigquery
+from google.cloud import bigquery  # type: ignore
 
 from app.core.config import settings
 

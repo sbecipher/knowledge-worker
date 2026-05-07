@@ -1,6 +1,7 @@
 import asyncio
 from temporalio.client import Client
 
+
 async def main():
     client = await Client.connect("localhost:7233")
     document = {
@@ -12,7 +13,7 @@ async def main():
         "url": "https://investors.alcoa.com/financials/annual-reports-and-proxy-statements/default.aspx",
         "type": "html",
         "filepath": "alcoa_q1_2024.html",
-        "downloaded": False
+        "downloaded": False,
     }
     print("Executing workflow...")
     result = await client.execute_workflow(
@@ -22,6 +23,7 @@ async def main():
         task_queue="knowledge-ingestion-queue",
     )
     print(f"Workflow result: {result}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
