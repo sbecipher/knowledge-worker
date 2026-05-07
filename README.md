@@ -17,9 +17,9 @@ The service requires Python 3.13 and uses standard libraries including `temporal
 
 ### Codebase Standards
 The codebase strictly adheres to the following industry standards:
-- **Pydantic & OpenAPI**: All data models (`KnowledgeDocument`, `StandardFeatures`) are rigorously defined using Pydantic V2 with detailed `Field` descriptions for full OpenAPI integration.
+- **Pydantic V2 & OpenAPI**: All data models (`KnowledgeDocument`, `StandardFeatures`) are rigorously defined using Pydantic V2. The `Settings` model uses `model_config` (from `pydantic-settings`), and all models have detailed `Field` descriptions for robust OpenAPI integration. End-to-end tests strongly type payloads via the Pydantic models.
 - **Formatting**: The codebase is formatted completely using `black`.
-- **Linting & Typing**: Fully compliant with `flake8` for linting and `mypy` for static type checking.
+- **Linting & Typing**: Fully compliant with `flake8` for linting and `mypy` for static type checking, ensuring zero unused imports and complete type safety.
 
 ### Environment Configuration
 

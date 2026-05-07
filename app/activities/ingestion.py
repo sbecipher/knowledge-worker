@@ -1,8 +1,6 @@
 import logging
 import httpx
 from temporalio import activity
-from google.cloud import storage
-
 from app.models.payloads import KnowledgeDocument
 from app.core.config import settings
 

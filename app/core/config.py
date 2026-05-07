@@ -10,8 +10,7 @@ class Settings(BaseSettings):
     BQ_TABLE: str = "documents"
     KNOWLEDGEIO_API_URL: str = "http://knowledgeio-api:8000"
 
-    class Config:
-        env_file = ".env"
+    model_config = {"env_file": ".env"}
 
 
 settings = Settings()
