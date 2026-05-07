@@ -77,15 +77,16 @@ async def process_document_and_extract_features(
 
     # 4. Generate Standard Features via Gemini
     # We use gemini-1.5-pro or flash for the analysis
-    response = genai_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=f"{GEMINI_PROMPT}\n\n{text_content[:30000]}",  # Truncate to avoid context limits if very large
-    )
-
     try:
-        # Clean potential markdown from response
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        features = json.loads(clean_json)
+        response = genai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=f"{GEMINI_PROMPT}\n\n{text_content[:30000]}",  # Truncate to avoid context limits if very large
+            config=genai.types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=StandardFeatures,
+            ),
+        )
+        features = json.loads(response.text)
         validated_features = StandardFeatures(**features)
     except Exception as e:
         logger.error(f"Failed to parse Gemini response: {e}")

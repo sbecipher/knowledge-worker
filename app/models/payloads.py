@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import Optional
 
 
 class KnowledgeDocument(BaseModel):
@@ -12,4 +11,4 @@ class KnowledgeDocument(BaseModel):
     type: str  # e.g., 'html', 'pdf'
     filepath: str
     downloaded: bool = False
-    gcs_uri: Optional[str] = None
+    gcs_uri: str | None = None

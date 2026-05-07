@@ -12,33 +12,30 @@ logger = logging.getLogger(__name__)
 @activity.defn
 async def download_document_to_gcs(doc: KnowledgeDocument) -> str:
     """
-    Downloads a document from the given URL and uploads it to the Source GCS bucket.
+    Calls the KnowledgeIO API to download a document via Selenium and upload it to the Source GCS bucket.
     """
-    client = storage.Client(project=settings.PROJECT_ID)
-    bucket = client.bucket(settings.SOURCE_BUCKET)
+    api_url = f"{settings.KNOWLEDGEIO_API_URL.rstrip('/')}/api/v1/scrape/url"
+    
+    payload = {
+        "year": doc.year,
+        "url": str(doc.url),
+        "title": doc.title,
+        "base_url": str(doc.url),
+        "company_name": doc.company_name,
+        "company_ticker": doc.company_ticker,
+        "company_id": doc.company_id
+    }
 
-    # Generate GCS path
-    # Path Convention: {company_ticker}/{year}/{title_slug}.{type}
-    title_slug = "".join([c if c.isalnum() else "_" for c in doc.title]).strip("_")[
-        :100
-    ]
-    gcs_blob_name = f"{doc.company_ticker}/{doc.year}/{title_slug}.{doc.type}"
-    blob = bucket.blob(gcs_blob_name)
-
-    logger.info(f"Downloading file from {doc.filepath}")
-    # Download the file
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
-        response = await http_client.get(str(doc.filepath), follow_redirects=True)
+    logger.info(f"Calling KnowledgeIO API to download file from {doc.url}")
+    
+    async with httpx.AsyncClient(timeout=300.0) as http_client:
+        response = await http_client.post(api_url, json=payload)
         response.raise_for_status()
-
-        # Upload to GCS
-        blob.upload_from_string(
-            response.content,
-            content_type=response.headers.get(
-                "Content-Type", "application/octet-stream"
-            ),
-        )
-
-    gcs_uri = f"gs://{settings.SOURCE_BUCKET}/{gcs_blob_name}"
-    logger.info(f"Successfully uploaded {doc.filepath} to {gcs_uri}")
+        
+        result = response.json()
+        gcs_uri = result.get("gcs_uri")
+        if not gcs_uri:
+            raise ValueError(f"KnowledgeIO API did not return a gcs_uri: {result}")
+            
+    logger.info(f"Successfully scraped and uploaded to {gcs_uri}")
     return gcs_uri

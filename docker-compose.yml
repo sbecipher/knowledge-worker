@@ -1,0 +1,20 @@
+services:
+  knowledgeflow-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: knowledgeflow-worker
+    environment:
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-host.docker.internal:7233}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      KNOWLEDGEIO_API_URL: ${KNOWLEDGEIO_API_URL:-http://knowledgeio-api:8000}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    networks:
+      - knowledge-network
+    volumes:
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:ro
+
+networks:
+  knowledge-network:
+    external: true
+    name: knowledge-network
