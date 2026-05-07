@@ -1,9 +1,9 @@
 services:
-  knowledgeflow-worker:
+  knowledge-worker:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: knowledgeflow-worker
+    container_name: knowledge-worker
     environment:
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-host.docker.internal:7233}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
