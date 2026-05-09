@@ -1,7 +1,6 @@
 import logging
 import json
 import io
-import urllib.parse
 from datetime import datetime, timezone
 
 import pandas as pd  # type: ignore
@@ -37,7 +36,7 @@ Document Text:
 
 
 @activity.defn
-async def process_document_and_extract_features(
+def process_document_and_extract_features(
     doc: KnowledgeDocument, source_gcs_uri: str
 ) -> dict:
     """
@@ -47,40 +46,27 @@ async def process_document_and_extract_features(
     """
     client = storage.Client(project=settings.PROJECT_ID)
 
-    # 1. Download raw file from GCS
-    parsed_uri = urllib.parse.urlparse(source_gcs_uri)
-    source_bucket = client.bucket(parsed_uri.netloc)
-    source_blob = source_bucket.blob(parsed_uri.path.lstrip("/"))
-    raw_content = source_blob.download_as_bytes()
+    # 1. Determine mime type and set up Gemini Part
+    mime_type = "application/pdf" if doc.type.lower() == "pdf" else "text/html"
 
-    # 2. Extract Text via Document AI (Optional: using Gemini directly for text if Document AI isn't strictly needed for all formats, but we'll use Document AI for PDF parsing)
-    # For simplicity in this workflow, if it's HTML we can just decode, if PDF use Document AI.
-    text_content = ""
-    if doc.type.lower() == "pdf":
-        # Note: In production, the processor ID should come from settings
-        # This is a placeholder for the Document AI call
-        # name = docai_client.processor_path(settings.PROJECT_ID, settings.REGION, settings.DOCAI_PROCESSOR_ID)
-        # request = documentai.ProcessRequest(name=name, raw_document=documentai.RawDocument(content=raw_content, mime_type=mime_type))
-        # result = docai_client.process_document(request=request)
-        # text_content = result.document.text
-        text_content = "Extracted PDF content placeholder"  # Replace with actual Document AI call when processor ID is available
-    else:
-        text_content = raw_content.decode("utf-8", errors="ignore")
-
-    # 3. Upload to Gemini File Search
+    # 2. Initialize Gemini Client with a strict timeout to prevent thread hanging
     genai_client = genai.Client(
-        vertexai=True, project=settings.PROJECT_ID, location=settings.REGION
+        vertexai=True, 
+        project=settings.PROJECT_ID, 
+        location="global"
     )
-    # In a real scenario, you'd write the bytes to a temp file and upload
-    # Here we mock the upload response for the structure
-    gemini_file_uri = f"gemini://mock_uri/{doc.company_ticker}/{doc.year}"
 
-    # 4. Generate Standard Features via Gemini
-    # We use gemini-1.5-pro or flash for the analysis
+    # We no longer need mock URIs since Vertex AI natively reads from GCS
+    gemini_file_uri = source_gcs_uri
+
+    # 3. Generate Standard Features via Gemini using GCS URI natively
     try:
         response = genai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=f"{GEMINI_PROMPT}\n\n{text_content[:30000]}",  # Truncate to avoid context limits if very large
+            model="gemini-3-flash-preview",
+            contents=[
+                GEMINI_PROMPT,
+                genai.types.Part.from_uri(file_uri=source_gcs_uri, mime_type=mime_type)
+            ],
             config=genai.types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=StandardFeatures,
@@ -91,14 +77,27 @@ async def process_document_and_extract_features(
         features = json.loads(response.text)
         validated_features = StandardFeatures(**features)
     except Exception as e:
-        logger.error(f"Failed to parse Gemini response: {e}")
-        validated_features = StandardFeatures(
-            summary="Parsing error", key_entities=[], topics=[]
-        )
+        error_str = str(e).upper()
+        transient_codes = ["429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504", "UNAVAILABLE", "TIMEOUT", "TIMED OUT"]
+        if any(code in error_str for code in transient_codes):
+            logger.warning(f"Transient API Error ({error_str[:50]}). Raising RuntimeError to trigger Temporal retry.")
+            raise RuntimeError(f"Transient API Error: {e}")
+        elif "400" in error_str and "INVALID_ARGUMENT" in error_str:
+            logger.warning(f"Document was invalid/empty for Gemini (400 INVALID_ARGUMENT). Generating empty features. Error: {e}")
+            validated_features = StandardFeatures(summary="Document parsing failed or document is empty.", key_entities=[], topics=[])
+        else:
+            from temporalio.exceptions import ApplicationError
+            logger.error(f"Permanent Gemini parsing error: {e}")
+            raise ApplicationError(f"Permanent Gemini parsing error: {e}", non_retryable=True)
 
     # 5. Create Parquet and upload to Prod GCS
+    import hashlib
+    # Use deterministic hash for document ID
+    stable_hash = hashlib.md5(doc.title.encode()).hexdigest()[:16]
+    doc_id = f"{doc.company_id}_{doc.year}_{stable_hash}"
+    
     record = {
-        "document_id": f"{doc.company_id}_{doc.year}_{hash(doc.title)}",
+        "document_id": doc_id,
         "company_id": doc.company_id,
         "company_ticker": doc.company_ticker,
         "year": doc.year,
@@ -112,19 +111,21 @@ async def process_document_and_extract_features(
     }
 
     df = pd.DataFrame([record])
+    # Cast to microsecond resolution for BigQuery compatibility
+    df['ingestion_timestamp'] = df['ingestion_timestamp'].astype('datetime64[us, UTC]')
+    
     parquet_buffer = io.BytesIO()
     df.to_parquet(parquet_buffer, index=False)
 
-    prod_bucket = client.bucket(settings.PROD_BUCKET)
-    prod_blob_name = (
-        f"{doc.company_ticker}/{doc.year}/{doc.company_id}_{hash(doc.title)}.parquet"
-    )
+    prod_bucket = client.bucket("sbecipher-intelligence")
+    prod_blob_name = f"stage/knowledge/{doc_id}.parquet"
+    
     prod_blob = prod_bucket.blob(prod_blob_name)
     prod_blob.upload_from_string(
         parquet_buffer.getvalue(), content_type="application/octet-stream"
     )
 
-    prod_gcs_uri = f"gs://{settings.PROD_BUCKET}/{prod_blob_name}"
+    prod_gcs_uri = f"gs://sbecipher-intelligence/{prod_blob_name}"
     record["prod_gcs_uri"] = prod_gcs_uri
 
     logger.info(f"Successfully processed document and saved to {prod_gcs_uri}")
