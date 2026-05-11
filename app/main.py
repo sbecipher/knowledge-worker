@@ -10,7 +10,12 @@ from temporalio.worker import Worker
 from app.activities.ingestion import download_document_to_gcs
 from app.activities.processing import process_document_and_extract_features
 from app.activities.loading import update_knowledge_index
+from app.activities.orchestration import (
+    discover_documents_for_ticker,
+    filter_existing_documents,
+)
 from app.workflows.ingestion_workflow import KnowledgeIngestionWorkflow
+from app.workflows.company_workflow import KnowledgeCompanyWorkflow
 from app.core.config import settings
 
 
@@ -55,20 +60,32 @@ async def main():
     # Connect to local Temporal server or use env vars for production
     temporal_address = os.getenv("TEMPORAL_ADDRESS") or settings.TEMPORAL_ADDRESS
     logging.info("Connecting to Temporal at %s", temporal_address)
-    client = await Client.connect(temporal_address)
+    from temporalio.contrib.pydantic import pydantic_data_converter
 
-    worker = Worker(
-        client,
-        task_queue="knowledge-ingestion-queue",
-        workflows=[KnowledgeIngestionWorkflow],
-        activities=[
-            download_document_to_gcs,
-            process_document_and_extract_features,
-            update_knowledge_index,
-        ],
+    client = await Client.connect(
+        temporal_address, data_converter=pydantic_data_converter
     )
-    logging.info("Starting KnowledgeFlow Worker on queue: knowledge-ingestion-queue")
-    await worker.run()
+
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as activity_executor:
+        worker = Worker(
+            client,
+            task_queue="knowledge-ingestion-queue",
+            workflows=[KnowledgeIngestionWorkflow, KnowledgeCompanyWorkflow],
+            activities=[
+                download_document_to_gcs,
+                process_document_and_extract_features,
+                update_knowledge_index,
+                discover_documents_for_ticker,
+                filter_existing_documents,
+            ],
+            activity_executor=activity_executor,
+        )
+        logging.info(
+            "Starting KnowledgeFlow Worker on queue: knowledge-ingestion-queue"
+        )
+        await worker.run()
 
 
 if __name__ == "__main__":

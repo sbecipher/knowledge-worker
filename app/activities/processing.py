@@ -51,9 +51,7 @@ def process_document_and_extract_features(
 
     # 2. Initialize Gemini Client with a strict timeout to prevent thread hanging
     genai_client = genai.Client(
-        vertexai=True, 
-        project=settings.PROJECT_ID, 
-        location="global"
+        vertexai=True, project=settings.PROJECT_ID, location="global"
     )
 
     # We no longer need mock URIs since Vertex AI natively reads from GCS
@@ -63,9 +61,9 @@ def process_document_and_extract_features(
     try:
         response = genai_client.models.generate_content(
             model="gemini-3-flash-preview",
-            contents=[
+            contents=[  # type: ignore
                 GEMINI_PROMPT,
-                genai.types.Part.from_uri(file_uri=source_gcs_uri, mime_type=mime_type)
+                genai.types.Part.from_uri(file_uri=source_gcs_uri, mime_type=mime_type),
             ],
             config=genai.types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -78,24 +76,46 @@ def process_document_and_extract_features(
         validated_features = StandardFeatures(**features)
     except Exception as e:
         error_str = str(e).upper()
-        transient_codes = ["429", "RESOURCE_EXHAUSTED", "500", "502", "503", "504", "UNAVAILABLE", "TIMEOUT", "TIMED OUT"]
+        transient_codes = [
+            "429",
+            "RESOURCE_EXHAUSTED",
+            "500",
+            "502",
+            "503",
+            "504",
+            "UNAVAILABLE",
+            "TIMEOUT",
+            "TIMED OUT",
+        ]
         if any(code in error_str for code in transient_codes):
-            logger.warning(f"Transient API Error ({error_str[:50]}). Raising RuntimeError to trigger Temporal retry.")
+            logger.warning(
+                f"Transient API Error ({error_str[:50]}). Raising RuntimeError to trigger Temporal retry."
+            )
             raise RuntimeError(f"Transient API Error: {e}")
         elif "400" in error_str and "INVALID_ARGUMENT" in error_str:
-            logger.warning(f"Document was invalid/empty for Gemini (400 INVALID_ARGUMENT). Generating empty features. Error: {e}")
-            validated_features = StandardFeatures(summary="Document parsing failed or document is empty.", key_entities=[], topics=[])
+            logger.warning(
+                f"Document was invalid/empty for Gemini (400 INVALID_ARGUMENT). Generating empty features. Error: {e}"
+            )
+            validated_features = StandardFeatures(
+                summary="Document parsing failed or document is empty.",
+                key_entities=[],
+                topics=[],
+            )
         else:
             from temporalio.exceptions import ApplicationError
+
             logger.error(f"Permanent Gemini parsing error: {e}")
-            raise ApplicationError(f"Permanent Gemini parsing error: {e}", non_retryable=True)
+            raise ApplicationError(
+                f"Permanent Gemini parsing error: {e}", non_retryable=True
+            )
 
     # 5. Create Parquet and upload to Prod GCS
     import hashlib
+
     # Use deterministic hash for document ID
     stable_hash = hashlib.md5(doc.title.encode()).hexdigest()[:16]
     doc_id = f"{doc.company_id}_{doc.year}_{stable_hash}"
-    
+
     record = {
         "document_id": doc_id,
         "company_id": doc.company_id,
@@ -112,14 +132,14 @@ def process_document_and_extract_features(
 
     df = pd.DataFrame([record])
     # Cast to microsecond resolution for BigQuery compatibility
-    df['ingestion_timestamp'] = df['ingestion_timestamp'].astype('datetime64[us, UTC]')
-    
+    df["ingestion_timestamp"] = df["ingestion_timestamp"].astype("datetime64[us, UTC]")
+
     parquet_buffer = io.BytesIO()
     df.to_parquet(parquet_buffer, index=False)
 
     prod_bucket = client.bucket("sbecipher-intelligence")
     prod_blob_name = f"stage/knowledge/{doc_id}.parquet"
-    
+
     prod_blob = prod_bucket.blob(prod_blob_name)
     prod_blob.upload_from_string(
         parquet_buffer.getvalue(), content_type="application/octet-stream"

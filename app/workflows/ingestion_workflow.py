@@ -16,20 +16,32 @@ class KnowledgeIngestionWorkflow:
         """
         Orchestrates the ingestion, processing, and loading of a knowledge document.
         """
-        # 1. Download to Source GCS
-        source_gcs_uri = await workflow.execute_activity(
-            download_document_to_gcs,
-            document,
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=RetryPolicy(maximum_attempts=3),
+        workflow.logger.info(
+            f"Received document: downloaded={getattr(document, 'downloaded', None)}, gcs_uri={getattr(document, 'gcs_uri', None)}, type={type(document)}"
         )
+
+        # 1. Download to Source GCS (Skip if already downloaded and GCS URI is provided)
+        if document.downloaded and document.gcs_uri:
+            source_gcs_uri = document.gcs_uri
+        else:
+            source_gcs_uri = await workflow.execute_activity(
+                download_document_to_gcs,
+                document,
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
 
         # 2. Process (Document AI, Gemini, Parquet to Prod GCS)
         record = await workflow.execute_activity(
             process_document_and_extract_features,
             args=[document, source_gcs_uri],
             start_to_close_timeout=timedelta(minutes=15),
-            retry_policy=RetryPolicy(maximum_attempts=3),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=10),
+                backoff_coefficient=2.0,
+                maximum_interval=timedelta(minutes=2),
+                maximum_attempts=15,
+            ),
         )
 
         # 3. Load Parquet into BigQuery

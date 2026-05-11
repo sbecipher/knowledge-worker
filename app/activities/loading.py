@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 @activity.defn
-async def update_knowledge_index(prod_gcs_uri: str) -> bool:
+def update_knowledge_index(prod_gcs_uri: str) -> bool:
     """
     Loads the Parquet file from the Prod GCS bucket into the BigQuery dataset.
     """

@@ -1,6 +1,12 @@
 from pydantic import BaseModel, Field
 
 
+class CompanyPayload(BaseModel):
+    company_ticker: str = Field(description="The stock ticker symbol")
+    company_name: str = Field(description="The full name of the company")
+    base_url: str = Field(description="The base URL of the company's webpage")
+
+
 class KnowledgeDocument(BaseModel):
     title: str = Field(description="Title of the document")
     company_name: str = Field(description="Name of the company")
