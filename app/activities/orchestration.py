@@ -1,14 +1,45 @@
 import logging
 import hashlib
 from typing import List
+from urllib.parse import urlparse
 import httpx
 from google.cloud import storage  # type: ignore
 from temporalio import activity
 
+from app.core.knowledge_api import knowledge_api_headers
 from app.models.payloads import CompanyPayload, KnowledgeDocument
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _infer_document_type(item: dict) -> str:
+    explicit_type = str(item.get("type") or item.get("article_type") or "").lower()
+    if explicit_type in {"pdf", "html"}:
+        return explicit_type
+
+    url_path = urlparse(str(item.get("url", ""))).path.lower()
+    filepath = str(item.get("filepath", "")).lower()
+    if (
+        item.get("is_pdf") is True
+        or url_path.endswith(".pdf")
+        or filepath.endswith(".pdf")
+    ):
+        return "pdf"
+
+    return "html"
+
+
+def _build_document_filepath(
+    item: dict, company_id: str, year: int, document_type: str
+) -> str:
+    candidate = str(item.get("filepath") or "").strip()
+    if candidate and "://" not in candidate:
+        return candidate
+
+    extension = "pdf" if document_type == "pdf" else "html"
+    filename = hashlib.md5(str(item["url"]).encode("utf-8")).hexdigest()
+    return f"data/{company_id}/{year}/{filename}.{extension}"
 
 
 @activity.defn
@@ -37,7 +68,11 @@ async def discover_documents_for_ticker(
 
     async with httpx.AsyncClient(timeout=120.0) as http_client:
         try:
-            response = await http_client.post(api_url, json=payload)
+            response = await http_client.post(
+                api_url,
+                json=payload,
+                headers=knowledge_api_headers(),
+            )
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPStatusError as e:
@@ -55,14 +90,15 @@ async def discover_documents_for_ticker(
     documents = []
     for item in data:
         try:
-            filename = hashlib.md5(item["url"].encode("utf-8")).hexdigest() + ".html"
-            filepath = item.get(
-                "filepath", f"data/{payload['company_id']}/{year}/{filename}"
+            document_type = _infer_document_type(item)
+            filepath = _build_document_filepath(
+                item, payload["company_id"], year, document_type
             )
             doc = KnowledgeDocument(
                 title=item["title"],
                 url=item["url"],
                 date=item.get("date", str(year)),
+                type=document_type,
                 filepath=filepath,
                 company_name=payload["company_name"],
                 company_ticker=payload["company_ticker"],

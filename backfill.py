@@ -115,6 +115,7 @@ async def run_backfill(client: Client):
                 company_name=comp_info["company_name"],
                 company_id=company_id,
                 company_ticker=ticker,
+                base_url=comp_info.get("base_url", ""),
                 year=year,
                 url=f"gs://{bucket_name}/{blob.name}",  # Mock URL since we don't have the original
                 type=ext,

@@ -4,7 +4,7 @@ This repository contains the Temporal worker service for the **KnowledgeFlow** e
 
 ## Architecture & Workflows
 
-The main orchestrator (`client/` cloud function or equivalent) queues tasks onto the Temporal server. This worker listens on the `knowledge-ingestion-queue` and executes the `KnowledgeIngestionWorkflow`.
+The main orchestrator (`client/` cloud function or equivalent) queues tasks onto the Temporal server. The production worker listens on `knowledge-cloud-run-task-queue`, accepts `KnowledgeCompanyWorkflow` starts from the client function, and executes child `KnowledgeIngestionWorkflow` runs on the same queue.
 
 The workflow runs three primary activities:
 1. **Ingestion**: Download the document via URL and store the raw file (PDF, HTML) in the source GCS bucket (`sbecipher-knowledge-source`).
@@ -27,7 +27,8 @@ The worker configuration is strictly driven by environment variables using Pydan
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PROJECT_ID` | GCP Project ID | `sbecipherio` |
+| `PROJECT_ID` | GCP project used by the worker runtime | `data-cipher` |
+| `BQ_PROJECT_ID` | GCP project containing the BigQuery target table | `sbecipherio` |
 | `REGION` | GCP Region | `us-central1` |
 | `SOURCE_BUCKET` | Raw documents GCS bucket | `sbecipher-intelligence` |
 | `PROD_BUCKET` | Processed Parquet GCS bucket | `sbecipher-intelligence` |
@@ -35,7 +36,13 @@ The worker configuration is strictly driven by environment variables using Pydan
 | `BQ_TABLE` | Target BigQuery table | `documents` |
 | `TEMPORAL_ADDRESS` | Network address for Temporal server | `localhost:7233` |
 | `TEMPORAL_TASK_QUEUE` | Temporal task queue polled by this worker | `knowledge-ingestion-queue` |
-| `KNOWLEDGEIO_API_URL` | Private KnowledgeIO service base URL | `http://knowledgeio-api:8000` |
+| `KNOWLEDGEIO_API_URL` | KnowledgeIO Cloud Run base URL | `https://knowledgeio-875978034496.us-central1.run.app` |
+| `KNOWLEDGEIO_API_AUDIENCE` | Google OIDC audience used for KnowledgeIO API calls | `https://knowledgeio-875978034496.us-central1.run.app` |
+| `GEMINI_MODEL` | Gemini model used for extraction and chunk aggregation | `gemini-3-flash-preview` |
+| `GEMINI_PDF_MAX_BYTES` | Maximum PDF size sent directly to Gemini | `52428800` |
+| `GEMINI_PDF_CHUNK_TARGET_BYTES` | Target maximum serialized bytes per split PDF chunk | `45000000` |
+| `GEMINI_CHUNK_BUCKET` | GCS bucket for temporary Gemini PDF chunks | Defaults to `PROD_BUCKET` |
+| `GEMINI_CHUNK_PREFIX` | GCS prefix for temporary Gemini PDF chunks | `stage/knowledge/gemini_chunks` |
 | `LOG_LEVEL` | Python logging level (INFO, DEBUG) | `INFO` |
 | `ACTIVITY_EXECUTOR_THREADS` | Thread pool workers for synchronous activities | `10` |
 | `HEALTHCHECK_PORT` (or `PORT`) | Exposes health check HTTP server for Cloud Run | `8080` (if unset, server skips init) |
@@ -73,7 +80,7 @@ docker run -p 8080:8080 -e TEMPORAL_ADDRESS=host.docker.internal:7233 knowledge-
 
 The worker is deployed as an always-on Cloud Run service. Cloud Scheduler invokes the separate `knowledge-client` Gen 2 function, and that client starts `KnowledgeCompanyWorkflow` executions on the task queue this service polls.
 
-Production deploys should use an immutable Artifact Registry digest:
+Production deploys should use an immutable Artifact Registry digest. The deploy target project and the runtime data project are separate: deploy the Cloud Run service into `data-cipher`, but keep `RUNTIME_PROJECT_ID=sbecipherio` so BigQuery loads target `sbecipherio.knowledge.documents`.
 
 ```bash
 IMAGE=us-central1-docker.pkg.dev/data-cipher/knowledgeio/knowledge-worker@sha256:<digest> \

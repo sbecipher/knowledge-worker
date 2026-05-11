@@ -9,3 +9,4 @@ google-genai>=0.5.0
 pandas
 pyarrow
 pydantic-settings
+pypdf

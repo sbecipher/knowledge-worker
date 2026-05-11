@@ -3,6 +3,7 @@ import httpx
 from temporalio import activity
 from app.models.payloads import KnowledgeDocument
 from app.core.config import settings
+from app.core.knowledge_api import knowledge_api_headers
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ async def download_document_to_gcs(doc: KnowledgeDocument) -> str:
         "year": doc.year,
         "url": str(doc.url),
         "title": doc.title,
+        "article_type": doc.type,
         "base_url": doc.base_url,
         "company_name": doc.company_name,
         "company_ticker": doc.company_ticker,
@@ -27,7 +29,11 @@ async def download_document_to_gcs(doc: KnowledgeDocument) -> str:
     logger.info(f"Calling KnowledgeIO API to download file from {doc.url}")
 
     async with httpx.AsyncClient(timeout=300.0) as http_client:
-        response = await http_client.post(api_url, json=payload)
+        response = await http_client.post(
+            api_url,
+            json=payload,
+            headers=knowledge_api_headers(),
+        )
         response.raise_for_status()
 
         result = response.json()

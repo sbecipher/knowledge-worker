@@ -28,7 +28,12 @@ class KnowledgeIngestionWorkflow:
                 download_document_to_gcs,
                 document,
                 start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=RetryPolicy(maximum_attempts=3),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=10),
+                    backoff_coefficient=2.0,
+                    maximum_interval=timedelta(minutes=2),
+                    maximum_attempts=6,
+                ),
             )
 
         # 2. Process (Document AI, Gemini, Parquet to Prod GCS)

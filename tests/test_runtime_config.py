@@ -5,6 +5,8 @@ import http.client
 
 import pytest
 
+from app.activities import ingestion
+from app.activities import loading
 from app.activities import orchestration
 from app.core.config import Settings
 from app.models.payloads import KnowledgeDocument
@@ -24,6 +26,23 @@ def test_settings_accepts_cloud_run_task_queue() -> None:
     assert settings.ACTIVITY_EXECUTOR_THREADS == 3
 
 
+def test_settings_accepts_gemini_pdf_chunk_config() -> None:
+    settings = Settings(
+        _env_file=None,
+        GEMINI_MODEL="gemini-test-model",
+        GEMINI_PDF_MAX_BYTES=100,
+        GEMINI_PDF_CHUNK_TARGET_BYTES=80,
+        GEMINI_CHUNK_BUCKET="chunk-bucket",
+        GEMINI_CHUNK_PREFIX="tmp/chunks",
+    )
+
+    assert settings.GEMINI_MODEL == "gemini-test-model"
+    assert settings.GEMINI_PDF_MAX_BYTES == 100
+    assert settings.GEMINI_PDF_CHUNK_TARGET_BYTES == 80
+    assert settings.GEMINI_CHUNK_BUCKET == "chunk-bucket"
+    assert settings.GEMINI_CHUNK_PREFIX == "tmp/chunks"
+
+
 def test_activity_executor_uses_configured_thread_count() -> None:
     settings = Settings(_env_file=None, ACTIVITY_EXECUTOR_THREADS=2)
 
@@ -34,7 +53,9 @@ def test_activity_executor_uses_configured_thread_count() -> None:
         executor.shutdown(wait=True)
 
 
-def test_worker_registration_uses_configured_task_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_registration_uses_configured_task_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured = {}
 
     class FakeWorker:
@@ -139,3 +160,131 @@ def test_filter_existing_documents_uses_configured_source_bucket(
         "prefix": "source/knowledge/AA/2026/",
     }
     assert [document.title for document in result] == ["New"]
+
+
+def test_infer_document_type_from_article_item_flags() -> None:
+    assert orchestration._infer_document_type({"is_pdf": True}) == "pdf"
+    assert (
+        orchestration._infer_document_type(
+            {"url": "https://example.com/news/release.pdf?download=1"}
+        )
+        == "pdf"
+    )
+    assert (
+        orchestration._infer_document_type({"url": "https://example.com/news"})
+        == "html"
+    )
+
+
+def test_build_document_filepath_hashes_remote_article_items() -> None:
+    filepath = orchestration._build_document_filepath(
+        {"url": "https://example.com/releases/q1-results"},
+        company_id="com_aa",
+        year=2026,
+        document_type="html",
+    )
+
+    assert filepath == "data/com_aa/2026/069c957e404a5f5fbc1e713ef0df2cd9.html"
+
+
+def test_download_document_to_gcs_passes_article_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"gcs_uri": "gs://bucket/object"}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str, json: dict, headers: dict):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        ingestion.settings, "KNOWLEDGEIO_API_URL", "https://knowledgeio.example"
+    )
+    monkeypatch.setattr(
+        ingestion, "knowledge_api_headers", lambda: {"Authorization": "Bearer token"}
+    )
+    monkeypatch.setattr(ingestion.httpx, "AsyncClient", FakeAsyncClient)
+
+    doc = KnowledgeDocument(
+        title="Quarterly results",
+        company_name="Alcoa",
+        company_id="com_aa",
+        company_ticker="AA",
+        base_url="https://example.com",
+        year=2026,
+        url="https://example.com/releases/results.pdf",
+        type="pdf",
+        filepath="data/com_aa/2026/results.pdf",
+    )
+
+    result = asyncio.run(ingestion.download_document_to_gcs(doc))
+
+    assert result == "gs://bucket/object"
+    assert captured["url"] == "https://knowledgeio.example/api/v1/scrape/url"
+    assert captured["headers"] == {"Authorization": "Bearer token"}
+    assert captured["json"]["article_type"] == "pdf"
+
+
+def test_update_knowledge_index_uses_configured_bq_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = {}
+
+    class FakeLoadJob:
+        output_rows = 7
+
+        def result(self) -> None:
+            seen["result_called"] = True
+
+    class FakeBigQueryClient:
+        def __init__(self, project: str):
+            seen["project"] = project
+
+        def load_table_from_uri(self, uri: str, table_id: str, job_config):
+            seen["uri"] = uri
+            seen["table_id"] = table_id
+            seen["source_format"] = job_config.source_format
+            seen["write_disposition"] = job_config.write_disposition
+            seen["autodetect"] = job_config.autodetect
+            seen["schema_update_options"] = list(job_config.schema_update_options or [])
+            return FakeLoadJob()
+
+    monkeypatch.setattr(loading.settings, "PROJECT_ID", "data-cipher")
+    monkeypatch.setattr(loading.settings, "BQ_PROJECT_ID", "sbecipherio")
+    monkeypatch.setattr(loading.settings, "BQ_DATASET", "knowledge")
+    monkeypatch.setattr(loading.settings, "BQ_TABLE", "documents")
+    monkeypatch.setattr(loading.bigquery, "Client", FakeBigQueryClient)
+
+    result = loading.update_knowledge_index("gs://bucket/prod/knowledge/doc.parquet")
+
+    assert result is True
+    assert seen == {
+        "project": "sbecipherio",
+        "uri": "gs://bucket/prod/knowledge/doc.parquet",
+        "table_id": "sbecipherio.knowledge.documents",
+        "source_format": loading.bigquery.SourceFormat.PARQUET,
+        "write_disposition": loading.bigquery.WriteDisposition.WRITE_APPEND,
+        "autodetect": True,
+        "schema_update_options": [
+            loading.bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
+        ],
+        "result_called": True,
+    }
