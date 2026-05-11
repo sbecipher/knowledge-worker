@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt /app/worker/requirements.txt
 RUN pip install --no-cache-dir -r /app/worker/requirements.txt
 
-COPY . /app/worker
+COPY app /app/worker/app
 RUN useradd --create-home --shell /bin/bash appuser && chown -R appuser:appuser /app
 USER appuser
 

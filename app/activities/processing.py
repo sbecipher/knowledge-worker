@@ -137,7 +137,7 @@ def process_document_and_extract_features(
     parquet_buffer = io.BytesIO()
     df.to_parquet(parquet_buffer, index=False)
 
-    prod_bucket = client.bucket("sbecipher-intelligence")
+    prod_bucket = client.bucket(settings.PROD_BUCKET)
     prod_blob_name = f"prod/knowledge/{doc_id}.parquet"
 
     prod_blob = prod_bucket.blob(prod_blob_name)
@@ -145,7 +145,7 @@ def process_document_and_extract_features(
         parquet_buffer.getvalue(), content_type="application/octet-stream"
     )
 
-    prod_gcs_uri = f"gs://sbecipher-intelligence/{prod_blob_name}"
+    prod_gcs_uri = f"gs://{settings.PROD_BUCKET}/{prod_blob_name}"
     record["prod_gcs_uri"] = prod_gcs_uri
 
     logger.info(f"Successfully processed document and saved to {prod_gcs_uri}")

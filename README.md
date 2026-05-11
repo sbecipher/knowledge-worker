@@ -29,12 +29,15 @@ The worker configuration is strictly driven by environment variables using Pydan
 |----------|-------------|---------|
 | `PROJECT_ID` | GCP Project ID | `sbecipherio` |
 | `REGION` | GCP Region | `us-central1` |
-| `SOURCE_BUCKET` | Raw documents GCS bucket | `sbecipher-knowledge-source` |
-| `PROD_BUCKET` | Processed Parquet GCS bucket | `sbecipher-knowledge-prod` |
+| `SOURCE_BUCKET` | Raw documents GCS bucket | `sbecipher-intelligence` |
+| `PROD_BUCKET` | Processed Parquet GCS bucket | `sbecipher-intelligence` |
 | `BQ_DATASET` | Target BigQuery dataset | `knowledge` |
 | `BQ_TABLE` | Target BigQuery table | `documents` |
 | `TEMPORAL_ADDRESS` | Network address for Temporal server | `localhost:7233` |
+| `TEMPORAL_TASK_QUEUE` | Temporal task queue polled by this worker | `knowledge-ingestion-queue` |
+| `KNOWLEDGEIO_API_URL` | Private KnowledgeIO service base URL | `http://knowledgeio-api:8000` |
 | `LOG_LEVEL` | Python logging level (INFO, DEBUG) | `INFO` |
+| `ACTIVITY_EXECUTOR_THREADS` | Thread pool workers for synchronous activities | `10` |
 | `HEALTHCHECK_PORT` (or `PORT`) | Exposes health check HTTP server for Cloud Run | `8080` (if unset, server skips init) |
 
 ## Running Locally
@@ -68,4 +71,15 @@ To run the container locally:
 docker run -p 8080:8080 -e TEMPORAL_ADDRESS=host.docker.internal:7233 knowledge-worker
 ```
 
-The service natively spins up a threaded HTTP server on port 8080 to respond to `/health` and `/healthz` probes, making it perfectly suited for orchestration platforms like Google Cloud Run or Kubernetes.
+The worker is deployed as an always-on Cloud Run service. Cloud Scheduler invokes the separate `knowledge-client` Gen 2 function, and that client starts `KnowledgeCompanyWorkflow` executions on the task queue this service polls.
+
+Production deploys should use an immutable Artifact Registry digest:
+
+```bash
+IMAGE=us-central1-docker.pkg.dev/data-cipher/knowledgeio/knowledge-worker@sha256:<digest> \
+  deploy/gcp/knowledge-worker-cloud-run-service.sh
+```
+
+The deploy script configures Direct VPC egress, the production Temporal address, the Cloud Run task queue, one minimum instance, disabled CPU throttling, and private ingress. The container exposes `/health` and `/healthz` on port 8080 for Cloud Run startup checks.
+
+Before publishing an image, verify the Docker context is clean. The repository `.dockerignore` excludes `.env`, `.git`, local virtual environments, caches, tests, and logs from the container image.

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ID="${PROJECT_ID:-data-cipher}"
+REGION="${REGION:-us-central1}"
+SERVICE_NAME="${SERVICE_NAME:-knowledge-worker}"
+IMAGE="${IMAGE:?Set IMAGE to an immutable Artifact Registry digest or tag}"
+RUNNER_SERVICE_ACCOUNT="${RUNNER_SERVICE_ACCOUNT:-project-service-account@data-cipher.iam.gserviceaccount.com}"
+NETWORK="${NETWORK:-projects/vpc-prod-host-network/global/networks/vpc-prod-shared-net}"
+SUBNET="${SUBNET:-projects/vpc-prod-host-network/regions/us-central1/subnetworks/subnet-prod-data}"
+NETWORK_TAGS="${NETWORK_TAGS:-temporal-server}"
+
+TEMPORAL_ADDRESS="${TEMPORAL_ADDRESS:-172.0.0.4:7233}"
+TEMPORAL_TASK_QUEUE="${TEMPORAL_TASK_QUEUE:-knowledge-cloud-run-task-queue}"
+SOURCE_BUCKET="${SOURCE_BUCKET:-sbecipher-intelligence}"
+PROD_BUCKET="${PROD_BUCKET:-sbecipher-intelligence}"
+BQ_DATASET="${BQ_DATASET:-knowledge}"
+BQ_TABLE="${BQ_TABLE:-documents}"
+KNOWLEDGEIO_API_URL="${KNOWLEDGEIO_API_URL:-http://knowledgeio-api:8000}"
+LOG_LEVEL="${LOG_LEVEL:-INFO}"
+ACTIVITY_EXECUTOR_THREADS="${ACTIVITY_EXECUTOR_THREADS:-10}"
+MAX_CONCURRENT_ACTIVITIES="${MAX_CONCURRENT_ACTIVITIES:-10}"
+MAX_CONCURRENT_WORKFLOW_TASKS="${MAX_CONCURRENT_WORKFLOW_TASKS:-10}"
+MAX_CACHED_WORKFLOWS="${MAX_CACHED_WORKFLOWS:-100}"
+
+ENV_DELIM="|"
+ENV_VARS="PROJECT_ID=${PROJECT_ID}"
+ENV_VARS+="${ENV_DELIM}REGION=${REGION}"
+ENV_VARS+="${ENV_DELIM}SOURCE_BUCKET=${SOURCE_BUCKET}"
+ENV_VARS+="${ENV_DELIM}PROD_BUCKET=${PROD_BUCKET}"
+ENV_VARS+="${ENV_DELIM}BQ_DATASET=${BQ_DATASET}"
+ENV_VARS+="${ENV_DELIM}BQ_TABLE=${BQ_TABLE}"
+ENV_VARS+="${ENV_DELIM}KNOWLEDGEIO_API_URL=${KNOWLEDGEIO_API_URL}"
+ENV_VARS+="${ENV_DELIM}TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS}"
+ENV_VARS+="${ENV_DELIM}TEMPORAL_TASK_QUEUE=${TEMPORAL_TASK_QUEUE}"
+ENV_VARS+="${ENV_DELIM}LOG_LEVEL=${LOG_LEVEL}"
+ENV_VARS+="${ENV_DELIM}ACTIVITY_EXECUTOR_THREADS=${ACTIVITY_EXECUTOR_THREADS}"
+ENV_VARS+="${ENV_DELIM}MAX_CONCURRENT_ACTIVITIES=${MAX_CONCURRENT_ACTIVITIES}"
+ENV_VARS+="${ENV_DELIM}MAX_CONCURRENT_WORKFLOW_TASKS=${MAX_CONCURRENT_WORKFLOW_TASKS}"
+ENV_VARS+="${ENV_DELIM}MAX_CACHED_WORKFLOWS=${MAX_CACHED_WORKFLOWS}"
+
+gcloud run deploy "${SERVICE_NAME}" \
+    --project="${PROJECT_ID}" \
+    --region="${REGION}" \
+    --image="${IMAGE}" \
+    --service-account="${RUNNER_SERVICE_ACCOUNT}" \
+    --port=8080 \
+    --cpu=2 \
+    --memory=4Gi \
+    --min-instances=1 \
+    --max-instances=1 \
+    --no-cpu-throttling \
+    --network="${NETWORK}" \
+    --subnet="${SUBNET}" \
+    --network-tags="${NETWORK_TAGS}" \
+    --vpc-egress=all-traffic \
+    --ingress=internal \
+    --no-allow-unauthenticated \
+    --startup-probe=httpGet.path=/healthz,httpGet.port=8080,initialDelaySeconds=5,periodSeconds=10,timeoutSeconds=5,failureThreshold=12 \
+    --set-env-vars="^${ENV_DELIM}^${ENV_VARS}"
+
+echo "Deployed Cloud Run service ${SERVICE_NAME} in ${PROJECT_ID}/${REGION}."

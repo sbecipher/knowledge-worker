@@ -1,89 +1,30 @@
 import asyncio
 import logging
-import os
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from temporalio.client import Client
-from temporalio.worker import Worker
-
-from app.activities.ingestion import download_document_to_gcs
-from app.activities.processing import process_document_and_extract_features
-from app.activities.loading import update_knowledge_index
-from app.activities.orchestration import (
-    discover_documents_for_ticker,
-    filter_existing_documents,
+from app.runtime import (
+    configure_logging,
+    connect_temporal,
+    create_activity_executor,
+    create_knowledge_worker,
+    start_health_server,
 )
-from app.workflows.ingestion_workflow import KnowledgeIngestionWorkflow
-from app.workflows.company_workflow import KnowledgeCompanyWorkflow
 from app.core.config import settings
 
 
-class _HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path in {"/", "/health", "/healthz"}:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
-            return
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(self, format: str, *args: object) -> None:
-        return
-
-
-def start_health_server() -> None:
-    port_value = os.getenv("HEALTHCHECK_PORT") or os.getenv("PORT")
-    if not port_value:
-        return
-    try:
-        port = int(port_value)
-    except ValueError as exc:
-        raise ValueError("HEALTHCHECK_PORT/PORT must be an integer") from exc
-    server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    logging.info("Health server listening on %s", port)
-
-
 async def main():
-    # Setup logging level from env
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
-    # Start healthcheck server if configured
+    configure_logging(settings)
     start_health_server()
 
-    # Connect to local Temporal server or use env vars for production
-    temporal_address = os.getenv("TEMPORAL_ADDRESS") or settings.TEMPORAL_ADDRESS
-    logging.info("Connecting to Temporal at %s", temporal_address)
-    from temporalio.contrib.pydantic import pydantic_data_converter
-
-    client = await Client.connect(
-        temporal_address, data_converter=pydantic_data_converter
-    )
-
-    import concurrent.futures
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as activity_executor:
-        worker = Worker(
+    client = await connect_temporal(settings)
+    with create_activity_executor(settings) as activity_executor:
+        worker = create_knowledge_worker(
             client,
-            task_queue="knowledge-ingestion-queue",
-            workflows=[KnowledgeIngestionWorkflow, KnowledgeCompanyWorkflow],
-            activities=[
-                download_document_to_gcs,
-                process_document_and_extract_features,
-                update_knowledge_index,
-                discover_documents_for_ticker,
-                filter_existing_documents,
-            ],
-            activity_executor=activity_executor,
+            settings,
+            activity_executor,
         )
         logging.info(
-            "Starting KnowledgeFlow Worker on queue: knowledge-ingestion-queue"
+            "Starting KnowledgeFlow Worker on queue: %s",
+            settings.TEMPORAL_TASK_QUEUE,
         )
         await worker.run()
 

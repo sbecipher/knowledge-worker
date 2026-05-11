@@ -89,13 +89,13 @@ async def filter_existing_documents(
         return []
 
     ticker = documents[0].company_ticker
-    bucket_name = "sbecipher-intelligence"
+    bucket_name = settings.SOURCE_BUCKET
     prefix = f"source/knowledge/{ticker}/{year}/"
 
     logger.info(f"Checking existing documents in gs://{bucket_name}/{prefix}")
 
     # We use sync GCS client since activity executes in thread pool
-    client = storage.Client()
+    client = storage.Client(project=settings.PROJECT_ID)
     bucket = client.bucket(bucket_name)
 
     existing_blobs = list(bucket.list_blobs(prefix=prefix))

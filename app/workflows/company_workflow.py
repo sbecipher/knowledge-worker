@@ -92,6 +92,7 @@ class KnowledgeCompanyWorkflow:
                 KnowledgeIngestionWorkflow.run,
                 args=[doc],
                 id=workflow_id,
+                task_queue=workflow.info().task_queue,
             )
             coros.append(coro)
 
