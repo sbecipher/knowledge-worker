@@ -124,8 +124,8 @@ async def run_backfill(client: Client):
             )
             documents.append(doc)
 
-    # NOTE: Set to 10 to respect Gemini rate limits
-    batch_size = 10
+    # NOTE: Set to 5 to respect Gemini rate limits
+    batch_size = 5
     print(
         f"Found {len(documents)} documents to backfill. Proceeding in batches of {batch_size}..."
     )
@@ -160,7 +160,7 @@ async def run_backfill(client: Client):
 
         print(f"Batch {i//batch_size + 1} completed.")
         # Brief pause to avoid overwhelming Vertex AI (Gemini) API limits
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)
 
 
 async def main():
@@ -176,8 +176,8 @@ async def main():
 
     import concurrent.futures
 
-    # NOTE: Set to 10 to respect Gemini rate limits
-    activity_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    # NOTE: Set to 5 to respect Gemini rate limits
+    activity_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
 
     worker = Worker(
         client,

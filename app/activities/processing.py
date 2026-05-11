@@ -138,7 +138,7 @@ def process_document_and_extract_features(
     df.to_parquet(parquet_buffer, index=False)
 
     prod_bucket = client.bucket("sbecipher-intelligence")
-    prod_blob_name = f"stage/knowledge/{doc_id}.parquet"
+    prod_blob_name = f"prod/knowledge/{doc_id}.parquet"
 
     prod_blob = prod_bucket.blob(prod_blob_name)
     prod_blob.upload_from_string(
