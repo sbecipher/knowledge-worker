@@ -1,4 +1,5 @@
 import logging
+import hashlib
 from typing import List
 import httpx
 from google.cloud import storage  # type: ignore
@@ -54,7 +55,21 @@ async def discover_documents_for_ticker(
     documents = []
     for item in data:
         try:
-            doc = KnowledgeDocument(**item)
+            filename = hashlib.md5(item["url"].encode("utf-8")).hexdigest() + ".html"
+            filepath = item.get(
+                "filepath", f"data/{payload['company_id']}/{year}/{filename}"
+            )
+            doc = KnowledgeDocument(
+                title=item["title"],
+                url=item["url"],
+                date=item.get("date", str(year)),
+                filepath=filepath,
+                company_name=payload["company_name"],
+                company_ticker=payload["company_ticker"],
+                company_id=payload["company_id"],
+                year=year,
+                base_url=payload["base_url"],
+            )
             documents.append(doc)
         except Exception as e:
             logger.warning(f"Skipping invalid document record: {e}")

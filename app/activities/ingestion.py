@@ -18,7 +18,7 @@ async def download_document_to_gcs(doc: KnowledgeDocument) -> str:
         "year": doc.year,
         "url": str(doc.url),
         "title": doc.title,
-        "base_url": str(doc.url),
+        "base_url": doc.base_url,
         "company_name": doc.company_name,
         "company_ticker": doc.company_ticker,
         "company_id": doc.company_id,
