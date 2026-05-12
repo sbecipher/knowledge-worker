@@ -7,6 +7,7 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from app.activities.orchestration import (
         discover_documents_for_ticker,
+        discover_edgar_documents,
         filter_existing_documents,
     )
     from app.models.payloads import CompanyPayload
@@ -27,8 +28,9 @@ class KnowledgeCompanyWorkflow:
             f"Starting company workflow for {company.company_ticker} for year {year}"
         )
 
-        # Step 1: Discover documents via KnowledgeIO API
-        discovered_docs = await workflow.execute_activity(
+        import asyncio
+        # Step 1: Discover documents via KnowledgeIO API and SEC EDGAR
+        knowledge_io_future = workflow.execute_activity(
             discover_documents_for_ticker,
             args=[company, year],
             start_to_close_timeout=timedelta(minutes=5),
@@ -38,6 +40,35 @@ class KnowledgeCompanyWorkflow:
                 maximum_attempts=3,
             ),
         )
+        
+        edgar_future = workflow.execute_activity(
+            discover_edgar_documents,
+            args=[company, year],
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=10),
+                maximum_interval=timedelta(seconds=60),
+                maximum_attempts=3,
+            ),
+        )
+        
+        # Wait for both discoveries
+        knowledge_io_docs, edgar_docs = await asyncio.gather(
+            knowledge_io_future, 
+            edgar_future,
+            return_exceptions=True
+        )
+        
+        discovered_docs = []
+        if not isinstance(knowledge_io_docs, Exception) and knowledge_io_docs:
+            discovered_docs.extend(knowledge_io_docs)
+        else:
+            workflow.logger.error(f"Failed to fetch KnowledgeIO docs: {knowledge_io_docs}")
+            
+        if not isinstance(edgar_docs, Exception) and edgar_docs:
+            discovered_docs.extend(edgar_docs)
+        else:
+            workflow.logger.error(f"Failed to fetch EDGAR docs: {edgar_docs}")
 
         if not discovered_docs:
             workflow.logger.info(

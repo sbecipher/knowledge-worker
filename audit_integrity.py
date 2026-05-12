@@ -5,15 +5,9 @@ from google.cloud import storage  # type: ignore
 
 
 def main():
-    print("Loading companies.json...")
-    companies_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "knowledgeio", "companies.json"
-    )
-    if not os.path.exists(companies_path):
-        companies_path = "/Users/jlroo/Library/CloudStorage/GoogleDrive-jlrg@sbecipher.com/My Drive/Sbecipher Capital/Cloud/orchestration/knowledgeio/companies.json"
-
-    with open(companies_path, "r") as f:
-        companies_data = json.load(f)
+    print("Loading companies.json from GCS...")
+    from app.utils.metadata import get_latest_companies
+    companies_data = get_latest_companies()
 
     ticker_to_company = {comp["company_ticker"]: comp for comp in companies_data}
 
@@ -30,6 +24,18 @@ def main():
         if blob.name.endswith(".parquet")
     )
     print(f"Found {len(existing_prod_files)} files in prod/knowledge/v1/")
+
+    print("Fetching stage/knowledge/ blobs...")
+    stage_blobs = bucket.list_blobs(prefix="stage/knowledge/")
+    existing_stage_files = set(
+        blob.name.split("/")[-1]
+        for blob in stage_blobs
+        if blob.name.endswith(".parquet") and "batch_jobs" not in blob.name
+    )
+    print(f"Found {len(existing_stage_files)} files in stage/knowledge/")
+    
+    existing_files = existing_prod_files.union(existing_stage_files)
+    print(f"Total processed files found: {len(existing_files)}")
 
     print("Fetching source/knowledge/ blobs...")
     source_blobs = bucket.list_blobs(prefix="source/knowledge/")
@@ -63,7 +69,7 @@ def main():
             doc_id = f"{company_id}_{year}_{stable_hash}"
             expected_filename = f"{doc_id}.parquet"
 
-            if expected_filename not in existing_prod_files:
+            if expected_filename not in existing_files:
                 ext = filename.split(".")[-1].lower() if "." in filename else "unknown"
                 missing_docs.append(
                     {

@@ -1,0 +1,258 @@
+[
+  {
+    "ticker": "AAU",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "AAU",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "ACX",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "AMLI",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "APWCC",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "ARCH",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "AUG",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "BBS",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "BELD",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "BHMC",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "BPOT",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "CNST",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "DYNA",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "EMET",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "FM",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "GIGA",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "GSIMEC",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "GSR",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "HML",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "HUADI",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "ICPR",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "IDAHOC",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "INNO",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "KA",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "KINGS",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "LARGO",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "LIONCG",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "LITARG",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "LITHO",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "LUDA",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "MATR",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "MRITE",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "MUE",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "NGD",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "NWPIPE",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "NXM",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "OCCF",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "PGN",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "QNX",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "RAMA",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "RISE",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "RRT",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "RUR",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "RYE",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "SEMCF",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "SGOLD",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "SMART",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "SNE",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "TERNIUM",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "TITAN",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "TMG",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "TRE",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "WOS",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "X",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "XTRA",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "ZDTCO",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "BMX",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "EMX",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "IPAX",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "MPVD",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "PHOS",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "RDUS",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "ZEUS",
+    "reason": "CIK not found"
+  },
+  {
+    "ticker": "SPLP",
+    "reason": "CIK not found"
+  }
+]

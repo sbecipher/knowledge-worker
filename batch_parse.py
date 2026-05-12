@@ -5,7 +5,10 @@ import os
 import pandas as pd  # type: ignore
 from datetime import datetime, timezone
 from google.cloud import storage  # type: ignore
+from google import genai
 from app.core.config import settings
+from app.models.payloads import KnowledgeDocument
+from app.activities.processing import _extract_standard_features
 
 def _document_id(doc: dict) -> str:
     # Need hashlib for MD5
@@ -32,6 +35,10 @@ def main():
     client = storage.Client(project=settings.PROJECT_ID)
     bucket_name = settings.PROD_BUCKET
     stage_bucket = client.bucket(bucket_name)
+
+    genai_client = genai.Client(
+        vertexai=True, project=settings.PROJECT_ID, location="global"
+    )
 
     # Download output JSONL
     # If the output_uri is a directory (e.g., gs://bucket/path/to/output/), find the actual JSONL
@@ -73,7 +80,7 @@ def main():
             parts = request_obj.get("contents", [{}])[0].get("parts", [])
             gcs_uri = None
             for p in parts:
-                if "fileData" in p:
+                if p.get("fileData"):
                     gcs_uri = p["fileData"].get("fileUri")
                     break
             
@@ -83,49 +90,69 @@ def main():
                 continue
 
             doc = uri_to_doc[gcs_uri]
+            doc_id = _document_id(doc)
+            
+            features_json = None
+            gemini_file_uri = gcs_uri
+            gemini_chunk_uris = "[]"
+            gemini_chunk_count = 0
             
             # Check for error in response
             if "error" in row:
                 print(f"Error in Gemini response for {gcs_uri}: {row['error']}")
-                error_count += 1
-                continue
+                print(f"Attempting online fallback for {gcs_uri}...")
+                try:
+                    kd_doc = KnowledgeDocument(**doc)
+                    validated_features, gemini_metadata = _extract_standard_features(
+                        doc=kd_doc,
+                        source_gcs_uri=gcs_uri,
+                        storage_client=client,
+                        genai_client=genai_client,
+                        doc_id=doc_id,
+                    )
+                    features_json = json.loads(validated_features.model_dump_json())
+                    gemini_file_uri = gemini_metadata.get("gemini_file_uri", gcs_uri)
+                    gemini_chunk_uris = gemini_metadata.get("gemini_chunk_uris", "[]")
+                    gemini_chunk_count = gemini_metadata.get("gemini_chunk_count", 0)
+                except Exception as e:
+                    print(f"Fallback online processing failed for {gcs_uri}: {e}")
+                    error_count += 1
+                    continue
+            else:
+                # Extract response features
+                response_obj = row.get("response", {})
+                candidates = response_obj.get("candidates", [])
+                if not candidates:
+                    print(f"No candidates returned for {gcs_uri}")
+                    error_count += 1
+                    continue
 
-            # Extract response features
-            response_obj = row.get("response", {})
-            candidates = response_obj.get("candidates", [])
-            if not candidates:
-                print(f"No candidates returned for {gcs_uri}")
-                error_count += 1
-                continue
-
-            content_parts = candidates[0].get("content", {}).get("parts", [])
-            if not content_parts:
-                print(f"No content parts returned for {gcs_uri}")
-                error_count += 1
-                continue
-            
-            try:
-                features_text = content_parts[0].get("text", "")
-                if not features_text:
-                    raise ValueError("Empty text")
+                content_parts = candidates[0].get("content", {}).get("parts", [])
+                if not content_parts:
+                    print(f"No content parts returned for {gcs_uri}")
+                    error_count += 1
+                    continue
                 
-                # Strip markdown blocks if Gemini returns ```json ... ```
-                features_text = features_text.strip()
-                if features_text.startswith("```json"):
-                    features_text = features_text[7:]
-                if features_text.startswith("```"):
-                    features_text = features_text[3:]
-                if features_text.endswith("```"):
-                    features_text = features_text[:-3]
+                try:
+                    features_text = content_parts[0].get("text", "")
+                    if not features_text:
+                        raise ValueError("Empty text")
+                    
+                    # Strip markdown blocks if Gemini returns ```json ... ```
+                    features_text = features_text.strip()
+                    if features_text.startswith("```json"):
+                        features_text = features_text[7:]
+                    if features_text.startswith("```"):
+                        features_text = features_text[3:]
+                    if features_text.endswith("```"):
+                        features_text = features_text[:-3]
 
-                features_json = json.loads(features_text)
-            except Exception as e:
-                print(f"Failed to parse Gemini output JSON for {gcs_uri}: {e}")
-                error_count += 1
-                continue
+                    features_json = json.loads(features_text)
+                except Exception as e:
+                    print(f"Failed to parse Gemini output JSON for {gcs_uri}: {e}")
+                    error_count += 1
+                    continue
 
-            doc_id = _document_id(doc)
-            
             record = {
                 "document_id": doc_id,
                 "company_id": doc.get("company_id"),
@@ -137,9 +164,9 @@ def main():
                 "document_type": doc.get("type", "unknown"),
                 "standard_features": json.dumps(features_json),
                 "ingestion_timestamp": datetime.now(timezone.utc),
-                "gemini_file_uri": gcs_uri,
-                "gemini_chunk_uris": "[]",
-                "gemini_chunk_count": 0,
+                "gemini_file_uri": gemini_file_uri,
+                "gemini_chunk_uris": gemini_chunk_uris,
+                "gemini_chunk_count": gemini_chunk_count,
             }
 
             df = pd.DataFrame([record])

@@ -16,9 +16,16 @@ def run_aggregation():
 
     print(f"Reading all staging parquets from {stage_path} ...")
 
+    import gcsfs
+    fs = gcsfs.GCSFileSystem(project=project_id)
+
     # Read all parquet files from the staging directory
     try:
-        df = pd.read_parquet(stage_path)
+        files = fs.glob(f"{bucket_name}/stage/knowledge/*.parquet")
+        if not files:
+            print("No parquet files found in staging.")
+            return
+        df = pd.concat([pd.read_parquet(f"gs://{f}") for f in files], ignore_index=True)
     except Exception as e:
         print(f"Failed to read staging files or no files found: {e}")
         return

@@ -8,14 +8,8 @@ from app.activities.processing import StandardFeatures, GEMINI_PROMPT
 
 
 def get_companies_data():
-    companies_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "knowledgeio", "companies.json"
-    )
-    if not os.path.exists(companies_path):
-        companies_path = "/Users/jlroo/Library/CloudStorage/GoogleDrive-jlrg@sbecipher.com/My Drive/Sbecipher Capital/Cloud/orchestration/knowledgeio/companies.json"
-
-    with open(companies_path, "r") as f:
-        return json.load(f)
+    from app.utils.metadata import get_latest_companies
+    return get_latest_companies()
 
 
 def generate_jsonl_payload():

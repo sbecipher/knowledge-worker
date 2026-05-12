@@ -44,16 +44,9 @@ def kill_existing_workers():
 
 
 async def run_backfill(client: Client, audit_file: str = None):
-    print("Loading companies.json...")
-    companies_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "knowledgeio", "companies.json"
-    )
-    if not os.path.exists(companies_path):
-        # Fallback to the absolute path if relative fails
-        companies_path = "/Users/jlroo/Library/CloudStorage/GoogleDrive-jlrg@sbecipher.com/My Drive/Sbecipher Capital/Cloud/orchestration/knowledgeio/companies.json"
-
-    with open(companies_path, "r") as f:
-        companies_data = json.load(f)
+    print("Loading companies.json from GCS...")
+    from app.utils.metadata import get_latest_companies
+    companies_data = get_latest_companies()
 
     ticker_to_company = {comp["company_ticker"]: comp for comp in companies_data}
 

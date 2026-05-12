@@ -7,13 +7,14 @@ def check_integrity():
     bucket = client.bucket("sbecipher-intelligence")
 
     # List files in the stage directory
-    blobs = list(bucket.list_blobs(prefix="stage/knowledge/", max_results=100))
+    blobs = list(bucket.list_blobs(prefix="stage/knowledge/", max_results=200))
+    blobs = [b for b in blobs if b.name.endswith('.parquet')]
 
     if not blobs:
         print("No files found in stage/knowledge/.")
         return
 
-    print(f"Found {len(blobs)} files (showing max 100). Checking the 5 most recent...")
+    print(f"Found {len(blobs)} parquet files. Checking the 5 most recent...")
 
     # Sort by updated time, newest first
     blobs.sort(key=lambda x: x.updated, reverse=True)

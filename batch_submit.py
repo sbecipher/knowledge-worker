@@ -52,7 +52,7 @@ def generate_jsonl(audit_file: str, jsonl_file: str):
 def main():
     parser = argparse.ArgumentParser(description="Submit a Gemini batch prediction job")
     parser.add_argument("--audit-file", required=True, help="Path to missing_documents.json")
-    parser.add_argument("--model", default="gemini-2.5-pro", help="Model to use (e.g., gemini-2.5-pro)")
+    parser.add_argument("--model", default="gemini-2.5-flash", help="Model to use (e.g., gemini-2.5-flash)")
     args = parser.parse_args()
 
     print(f"Preparing batch requests using model {args.model}")
