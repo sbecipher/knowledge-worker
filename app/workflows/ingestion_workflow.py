@@ -5,8 +5,8 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from app.models.payloads import KnowledgeDocument
     from app.activities.ingestion import download_document_to_gcs
-    from app.activities.processing import process_document_and_extract_features
-    from app.activities.loading import update_knowledge_index
+    from app.activities.processing import process_document_and_extract_features, _document_id
+    from app.activities.deduplication import check_document_exists_in_bq
 
 
 @workflow.defn
@@ -19,6 +19,20 @@ class KnowledgeIngestionWorkflow:
         workflow.logger.info(
             f"Received document: downloaded={getattr(document, 'downloaded', None)}, gcs_uri={getattr(document, 'gcs_uri', None)}, type={type(document)}"
         )
+
+        doc_id = _document_id(document)
+
+        # 0. Deduplication check in BigQuery
+        exists = await workflow.execute_activity(
+            check_document_exists_in_bq,
+            doc_id,
+            start_to_close_timeout=timedelta(minutes=1),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+        )
+
+        if exists:
+            workflow.logger.info(f"Document {doc_id} already exists in BigQuery. Skipping processing.")
+            return {"success": True, "document_id": doc_id, "skipped": True}
 
         # 1. Download to Source GCS (Skip if already downloaded and GCS URI is provided)
         if document.downloaded and document.gcs_uri:
@@ -36,7 +50,7 @@ class KnowledgeIngestionWorkflow:
                 ),
             )
 
-        # 2. Process (Document AI, Gemini, Parquet to Prod GCS)
+        # 2. Process (Document AI, Gemini, Parquet to Stage GCS)
         record = await workflow.execute_activity(
             process_document_and_extract_features,
             args=[document, source_gcs_uri],
@@ -49,12 +63,4 @@ class KnowledgeIngestionWorkflow:
             ),
         )
 
-        # 3. Load Parquet into BigQuery
-        success = await workflow.execute_activity(
-            update_knowledge_index,
-            record["prod_gcs_uri"],
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=RetryPolicy(maximum_attempts=3),
-        )
-
-        return {"success": success, "document_id": record["document_id"]}
+        return {"success": True, "document_id": record["document_id"], "skipped": False}
