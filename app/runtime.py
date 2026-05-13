@@ -10,10 +10,13 @@ from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
+from app.activities.deduplication import check_document_exists_in_bq
 from app.activities.ingestion import download_document_to_gcs
 from app.activities.loading import update_knowledge_index
+from app.activities.promotion import promote_to_prod
 from app.activities.orchestration import (
     discover_documents_for_ticker,
+    discover_edgar_documents,
     filter_existing_documents,
 )
 from app.activities.processing import process_document_and_extract_features
@@ -25,10 +28,13 @@ logger = logging.getLogger(__name__)
 
 WORKFLOWS = [KnowledgeIngestionWorkflow, KnowledgeCompanyWorkflow]
 ACTIVITIES = [
+    check_document_exists_in_bq,
     download_document_to_gcs,
     process_document_and_extract_features,
     update_knowledge_index,
+    promote_to_prod,
     discover_documents_for_ticker,
+    discover_edgar_documents,
     filter_existing_documents,
 ]
 

@@ -2,6 +2,8 @@
 
 This repository contains the Temporal worker service for the **KnowledgeFlow** extraction pipeline. The worker leverages Google Cloud services (Storage, Document AI, BigQuery) and Google GenAI (Gemini) to process raw documents (HTML, PDF) and extract structured analytical features.
 
+**Important Architecture Note:** This worker is deployed as an **independent, always-on Cloud Run service**. It does *not* run inside the Temporal server. It communicates with the Temporal server remotely by polling a task queue over the network, and interacts with the separate `knowledgeio` API, which is also an independent Cloud Run service.
+
 ## Architecture & Workflows
 
 The main orchestrator (`client/` cloud function or equivalent) queues tasks onto the Temporal server. The production worker listens on `knowledge-cloud-run-task-queue`, accepts `KnowledgeCompanyWorkflow` starts from the client function, and executes child `KnowledgeIngestionWorkflow` runs on the same queue.
@@ -78,11 +80,12 @@ To run the container locally:
 docker run -p 8080:8080 -e TEMPORAL_ADDRESS=host.docker.internal:7233 knowledge-worker
 ```
 
-The worker is deployed as an always-on Cloud Run service. Cloud Scheduler invokes the separate `knowledge-client` Gen 2 function, and that client starts `KnowledgeCompanyWorkflow` executions on the task queue this service polls.
+The worker is deployed via **GitHub Actions** as an always-on Cloud Run service. It is a completely decoupled service that connects to the Temporal server over the network. Cloud Scheduler invokes the separate `knowledge-client` Gen 2 function, and that client starts `KnowledgeCompanyWorkflow` executions on the task queue this service polls.
 
-Production deploys should use an immutable Artifact Registry digest. The deploy target project and the runtime data project are separate: deploy the Cloud Run service into `data-cipher`, but keep `RUNTIME_PROJECT_ID=sbecipherio` so BigQuery loads target `sbecipherio.knowledge.documents`.
+Production deploys use an immutable Artifact Registry digest, managed automatically by the CI/CD pipeline. The deploy target project and the runtime data project are separate: deploy the Cloud Run service into `data-cipher`, but keep `RUNTIME_PROJECT_ID=sbecipherio` so BigQuery loads target `sbecipherio.knowledge.documents`.
 
 ```bash
+# Example manual deploy command (typically handled by GitHub Actions):
 IMAGE=us-central1-docker.pkg.dev/data-cipher/knowledgeio/knowledge-worker@sha256:<digest> \
   deploy/gcp/knowledge-worker-cloud-run-service.sh
 ```

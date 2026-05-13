@@ -5,11 +5,13 @@ from temporalio.common import RetryPolicy
 
 # Import our activity, passing it through workflow.imported()
 with workflow.unsafe.imports_passed_through():
+    from app.activities.loading import update_knowledge_index
     from app.activities.orchestration import (
         discover_documents_for_ticker,
         discover_edgar_documents,
         filter_existing_documents,
     )
+    from app.activities.promotion import promote_to_prod
     from app.models.payloads import CompanyPayload
     from app.workflows.ingestion_workflow import KnowledgeIngestionWorkflow
 
@@ -130,16 +132,74 @@ class KnowledgeCompanyWorkflow:
         # Wait for all child workflows to complete
         results = await asyncio.gather(*coros, return_exceptions=True)
 
-        # Count successes (ignoring exceptions and False returns)
-        success_count = sum(1 for r in results if not isinstance(r, Exception) and r)
+        # Collect successful results that have a stage URI
+        successful_results = [
+            r for r in results
+            if not isinstance(r, Exception) and r and r.get("success") and not r.get("skipped")
+        ]
+
+        # Count Gate 2 skips (passed GCS filter but already in BQ)
+        skipped_results = [
+            r for r in results
+            if not isinstance(r, Exception) and r and r.get("skipped")
+        ]
 
         workflow.logger.info(
-            f"Completed ingestion for {company.company_ticker}. Successfully ingested {success_count}/{len(new_docs)}."
+            f"Processing complete for {company.company_ticker}. "
+            f"{len(successful_results)} processed, {len(skipped_results)} skipped (already in BQ), "
+            f"out of {len(new_docs)} new documents."
+        )
+
+        # Step 4: Batch BQ load and stage → prod promotion
+        promoted_count = 0
+        for result in successful_results:
+            stage_uri = result.get("prod_gcs_uri")
+            if not stage_uri:
+                workflow.logger.warning(
+                    f"No stage URI for document {result.get('document_id')}. Skipping load & promotion."
+                )
+                continue
+
+            try:
+                # Load Parquet into BigQuery
+                await workflow.execute_activity(
+                    update_knowledge_index,
+                    stage_uri,
+                    start_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=RetryPolicy(
+                        initial_interval=timedelta(seconds=5),
+                        maximum_interval=timedelta(seconds=60),
+                        maximum_attempts=3,
+                    ),
+                )
+
+                # Promote stage → prod
+                await workflow.execute_activity(
+                    promote_to_prod,
+                    stage_uri,
+                    start_to_close_timeout=timedelta(minutes=2),
+                    retry_policy=RetryPolicy(
+                        initial_interval=timedelta(seconds=5),
+                        maximum_interval=timedelta(seconds=30),
+                        maximum_attempts=3,
+                    ),
+                )
+                promoted_count += 1
+            except Exception as e:
+                workflow.logger.error(
+                    f"Failed to load/promote document {result.get('document_id')}: {e}"
+                )
+
+        workflow.logger.info(
+            f"Completed ingestion for {company.company_ticker}. "
+            f"Promoted {promoted_count}/{len(successful_results)} documents to prod."
         )
 
         return {
             "company": company.company_ticker,
             "discovered": len(discovered_docs),
-            "ingested": success_count,
+            "processed": len(successful_results),
+            "skipped": len(skipped_results),
+            "promoted": promoted_count,
             "message": "Ingestion completed.",
         }

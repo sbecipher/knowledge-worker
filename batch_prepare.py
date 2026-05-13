@@ -19,10 +19,21 @@ def generate_jsonl_payload():
     gcs_client = storage.Client(project=settings.PROJECT_ID)
     bucket_name = "sbecipher-intelligence"
 
+    # Collect doc_ids already processed in stage/knowledge/
     print(f"Listing blobs in gs://{bucket_name}/stage/knowledge/...")
     stage_blobs = gcs_client.list_blobs(bucket_name, prefix="stage/knowledge/")
     existing_stage_files = set(blob.name for blob in stage_blobs)
-    print(f"Found {len(existing_stage_files)} already processed files.")
+    print(f"Found {len(existing_stage_files)} already staged files.")
+
+    # Collect doc_ids already processed in prod/knowledge/v1/
+    print(f"Listing blobs in gs://{bucket_name}/prod/knowledge/v1/...")
+    prod_blobs = gcs_client.list_blobs(bucket_name, prefix="prod/knowledge/v1/")
+    existing_prod_ids = set()
+    for blob in prod_blobs:
+        if blob.name.endswith(".parquet"):
+            doc_id = blob.name.split("/")[-1].replace(".parquet", "")
+            existing_prod_ids.add(doc_id)
+    print(f"Found {len(existing_prod_ids)} already produced files.")
 
     print(f"Listing source blobs in gs://{bucket_name}/source/knowledge/...")
     source_blobs = gcs_client.list_blobs(bucket_name, prefix="source/knowledge/")
@@ -62,6 +73,9 @@ def generate_jsonl_payload():
             expected_stage_path = f"stage/knowledge/{doc_id}.parquet"
 
             if expected_stage_path in existing_stage_files:
+                continue
+
+            if doc_id in existing_prod_ids:
                 continue
 
             ext = filename.split(".")[-1].lower() if "." in filename else "unknown"

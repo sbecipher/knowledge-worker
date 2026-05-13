@@ -14,6 +14,9 @@ class KnowledgeDocument(BaseModel):
     company_ticker: str = Field(description="Stock ticker of the company")
     base_url: str = Field(description="The base URL of the company's webpage")
     year: int = Field(description="Year of the document")
+    date: str | None = Field(
+        default=None, description="Publication date of the document"
+    )
     url: str = Field(description="Source URL of the document")
     type: str = Field(description="Document type, e.g., 'html', 'pdf'")
     filepath: str = Field(description="Local or remote filepath for the document")

@@ -53,8 +53,9 @@ def parse_batch_output():
                 contents = request.get("contents", [])[0]
                 file_uri = None
                 for part in contents.get("parts", []):
-                    if "fileData" in part:
-                        file_uri = part["fileData"]["fileUri"]
+                    fd = part.get("fileData")
+                    if fd:
+                        file_uri = fd["fileUri"]
                         break
             except Exception as e:
                 print(f"Error parsing request structure: {e}")
@@ -91,9 +92,11 @@ def parse_batch_output():
                 # Already processed
                 continue
 
-            # Check response
-            if "error" in data or "status" in data:
-                print(f"Error for {doc_id}: {data.get('error') or data.get('status')}")
+            # Check response — Vertex AI batch includes an empty "status" key on
+            # successful predictions, so test the *value*, not just key presence.
+            error_val = data.get("error") or data.get("status")
+            if error_val:
+                print(f"Error for {doc_id}: {error_val}")
                 error_count += 1
                 continue
 

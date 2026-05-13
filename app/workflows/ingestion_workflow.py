@@ -31,7 +31,10 @@ class KnowledgeIngestionWorkflow:
         )
 
         if exists:
-            workflow.logger.info(f"Document {doc_id} already exists in BigQuery. Skipping processing.")
+            workflow.logger.warning(
+                f"Document {doc_id} already in BigQuery but passed GCS filter "
+                f"(source file may be missing). Skipping reprocessing."
+            )
             return {"success": True, "document_id": doc_id, "skipped": True}
 
         # 1. Download to Source GCS (Skip if already downloaded and GCS URI is provided)
@@ -63,4 +66,4 @@ class KnowledgeIngestionWorkflow:
             ),
         )
 
-        return {"success": True, "document_id": record["document_id"], "skipped": False}
+        return {"success": True, "document_id": record["document_id"], "prod_gcs_uri": record["prod_gcs_uri"], "skipped": False}
