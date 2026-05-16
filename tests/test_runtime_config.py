@@ -5,6 +5,7 @@ import http.client
 
 import pytest
 
+from app.activities import deduplication
 from app.activities import ingestion
 from app.activities import loading
 from app.activities import orchestration
@@ -152,7 +153,7 @@ def test_filter_existing_documents_uses_configured_source_bucket(
         ),
     ]
 
-    result = asyncio.run(orchestration.filter_existing_documents(documents, 2026))
+    result = orchestration.filter_existing_documents(documents, 2026)
 
     assert seen == {
         "project": "data-cipher",
@@ -248,43 +249,87 @@ def test_update_knowledge_index_uses_configured_bq_project(
 ) -> None:
     seen = {}
 
-    class FakeLoadJob:
-        output_rows = 7
-
-        def result(self) -> None:
-            seen["result_called"] = True
-
-    class FakeBigQueryClient:
-        def __init__(self, project: str):
-            seen["project"] = project
-
-        def load_table_from_uri(self, uri: str, table_id: str, job_config):
+    class FakeLoader:
+        def load_parquet(self, uri: str, table_id: str) -> bool:
             seen["uri"] = uri
             seen["table_id"] = table_id
-            seen["source_format"] = job_config.source_format
-            seen["write_disposition"] = job_config.write_disposition
-            seen["autodetect"] = job_config.autodetect
-            seen["schema_update_options"] = list(job_config.schema_update_options or [])
-            return FakeLoadJob()
+            seen["called"] = True
+            return True
 
-    monkeypatch.setattr(loading.settings, "PROJECT_ID", "data-cipher")
     monkeypatch.setattr(loading.settings, "BQ_PROJECT_ID", "sbecipherio")
     monkeypatch.setattr(loading.settings, "BQ_DATASET", "knowledge")
     monkeypatch.setattr(loading.settings, "BQ_TABLE", "documents")
-    monkeypatch.setattr(loading.bigquery, "Client", FakeBigQueryClient)
+    monkeypatch.setattr(loading, "get_bigquery_loader_backend", lambda: FakeLoader())
 
     result = loading.update_knowledge_index("gs://bucket/prod/knowledge/doc.parquet")
 
     assert result is True
     assert seen == {
-        "project": "sbecipherio",
         "uri": "gs://bucket/prod/knowledge/doc.parquet",
         "table_id": "sbecipherio.knowledge.documents",
-        "source_format": loading.bigquery.SourceFormat.PARQUET,
-        "write_disposition": loading.bigquery.WriteDisposition.WRITE_APPEND,
-        "autodetect": True,
-        "schema_update_options": [
-            loading.bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION
-        ],
-        "result_called": True,
+        "called": True,
     }
+
+
+def test_update_company_metadata_index_uses_dedicated_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = {}
+
+    class FakeLoader:
+        def load_parquet(self, uri: str, table_id: str) -> bool:
+            seen["uri"] = uri
+            seen["table_id"] = table_id
+            seen["called"] = True
+            return True
+
+    monkeypatch.setattr(loading.settings, "BQ_PROJECT_ID", "sbecipherio")
+    monkeypatch.setattr(loading.settings, "BQ_DATASET", "knowledge")
+    monkeypatch.setattr(
+        loading.settings, "BQ_COMPANY_METADATA_TABLE", "company_metadata"
+    )
+    monkeypatch.setattr(loading, "get_bigquery_loader_backend", lambda: FakeLoader())
+
+    result = loading.update_company_metadata_index(
+        "gs://bucket/prod/knowledge/company_metadata/doc.parquet"
+    )
+
+    assert result is True
+    assert seen == {
+        "uri": "gs://bucket/prod/knowledge/company_metadata/doc.parquet",
+        "table_id": "sbecipherio.knowledge.company_metadata",
+        "called": True,
+    }
+
+
+def test_check_document_exists_uses_bq_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = {}
+
+    class FakeResults:
+        total_rows = 1
+
+    class FakeQueryJob:
+        def result(self):
+            return FakeResults()
+
+    class FakeBigQueryClient:
+        def __init__(self, project: str):
+            seen["project"] = project
+
+        def query(self, query: str, job_config):
+            seen["query"] = query
+            seen["job_config"] = job_config
+            return FakeQueryJob()
+
+    monkeypatch.setattr(deduplication.settings, "BQ_PROJECT_ID", "sbecipherio")
+    monkeypatch.setattr(deduplication.settings, "BQ_DATASET", "knowledge")
+    monkeypatch.setattr(deduplication.settings, "BQ_TABLE", "documents")
+    monkeypatch.setattr(deduplication.bigquery, "Client", FakeBigQueryClient)
+
+    result = deduplication.check_document_exists_in_bq("doc-123")
+
+    assert result is True
+    assert seen["project"] == "sbecipherio"
+    assert "`sbecipherio.knowledge.documents`" in seen["query"]

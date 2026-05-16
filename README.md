@@ -13,6 +13,8 @@ The workflow runs three primary activities:
 2. **Processing**: Read the raw document from GCS, extract the text content (using Document AI or raw decoding), and generate structured analytical features using Gemini 2.5 Flash via native **Structured Outputs**. Finally, save these features as a Parquet file in the production GCS bucket (`sbecipher-knowledge-prod`).
 3. **Loading**: Load the structured Parquet file from the production bucket into a BigQuery table (`knowledge.documents`) for downstream consumption.
 
+`KnowledgeCompanyWorkflow` also supports `source=metadata`, which calls the sibling `knowledgeio` API for company metadata, writes a dedicated Parquet artifact under `stage/knowledge/company_metadata/`, and loads it into `knowledge.company_metadata`.
+
 ## Requirements
 
 The service requires Python 3.13 and uses standard libraries including `temporalio`, `google-genai`, `google-cloud-storage`, `google-cloud-documentai`, and `pydantic`.
@@ -36,11 +38,12 @@ The worker configuration is strictly driven by environment variables using Pydan
 | `PROD_BUCKET` | Processed Parquet GCS bucket | `sbecipher-intelligence` |
 | `BQ_DATASET` | Target BigQuery dataset | `knowledge` |
 | `BQ_TABLE` | Target BigQuery table | `documents` |
+| `BQ_COMPANY_METADATA_TABLE` | Target BigQuery table for company metadata artifacts | `company_metadata` |
 | `TEMPORAL_ADDRESS` | Network address for Temporal server | `localhost:7233` |
-| `TEMPORAL_TASK_QUEUE` | Temporal task queue polled by this worker | `knowledge-ingestion-queue` |
+| `TEMPORAL_TASK_QUEUE` | Temporal task queue polled by this worker | `knowledge-cloud-run-task-queue` |
 | `KNOWLEDGEIO_API_URL` | KnowledgeIO Cloud Run base URL | `https://knowledgeio-875978034496.us-central1.run.app` |
 | `KNOWLEDGEIO_API_AUDIENCE` | Google OIDC audience used for KnowledgeIO API calls | `https://knowledgeio-875978034496.us-central1.run.app` |
-| `GEMINI_MODEL` | Gemini model used for extraction and chunk aggregation | `gemini-3-flash-preview` |
+| `GEMINI_MODEL` | Gemini model used for extraction and chunk aggregation | `gemini-2.5-flash-lite` |
 | `GEMINI_PDF_MAX_BYTES` | Maximum PDF size sent directly to Gemini | `52428800` |
 | `GEMINI_PDF_CHUNK_TARGET_BYTES` | Target maximum serialized bytes per split PDF chunk | `45000000` |
 | `GEMINI_CHUNK_BUCKET` | GCS bucket for temporary Gemini PDF chunks | Defaults to `PROD_BUCKET` |

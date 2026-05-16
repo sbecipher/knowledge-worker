@@ -6,7 +6,7 @@ services:
     container_name: knowledge-worker
     environment:
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-host.docker.internal:7233}
-      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-knowledge-ingestion-queue}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-knowledge-cloud-run-task-queue}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       KNOWLEDGEIO_API_URL: ${KNOWLEDGEIO_API_URL:-http://knowledgeio-api:8000}
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}

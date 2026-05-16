@@ -5,7 +5,10 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from app.models.payloads import KnowledgeDocument
     from app.activities.ingestion import download_document_to_gcs
-    from app.activities.processing import process_document_and_extract_features, _document_id
+    from app.activities.processing import (
+        process_document_and_extract_features,
+        _document_id,
+    )
     from app.activities.deduplication import check_document_exists_in_bq
 
 
@@ -66,4 +69,9 @@ class KnowledgeIngestionWorkflow:
             ),
         )
 
-        return {"success": True, "document_id": record["document_id"], "prod_gcs_uri": record["prod_gcs_uri"], "skipped": False}
+        return {
+            "success": True,
+            "document_id": record["document_id"],
+            "prod_gcs_uri": record["prod_gcs_uri"],
+            "skipped": False,
+        }

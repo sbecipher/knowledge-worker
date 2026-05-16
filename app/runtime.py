@@ -10,9 +10,13 @@ from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.worker import Worker
 
+from app.activities.company_metadata import fetch_company_metadata
 from app.activities.deduplication import check_document_exists_in_bq
 from app.activities.ingestion import download_document_to_gcs
-from app.activities.loading import update_knowledge_index
+from app.activities.loading import (
+    update_company_metadata_index,
+    update_knowledge_index,
+)
 from app.activities.promotion import promote_to_prod
 from app.activities.orchestration import (
     discover_documents_for_ticker,
@@ -32,10 +36,12 @@ ACTIVITIES = [
     download_document_to_gcs,
     process_document_and_extract_features,
     update_knowledge_index,
+    update_company_metadata_index,
     promote_to_prod,
     discover_documents_for_ticker,
     discover_edgar_documents,
     filter_existing_documents,
+    fetch_company_metadata,
 ]
 
 
@@ -113,13 +119,13 @@ def create_knowledge_worker(
     if activity_executor is not None:
         worker_kwargs["activity_executor"] = activity_executor
     if current_settings.MAX_CONCURRENT_ACTIVITIES is not None:
-        worker_kwargs["max_concurrent_activities"] = (
-            current_settings.MAX_CONCURRENT_ACTIVITIES
-        )
+        worker_kwargs[
+            "max_concurrent_activities"
+        ] = current_settings.MAX_CONCURRENT_ACTIVITIES
     if current_settings.MAX_CONCURRENT_WORKFLOW_TASKS is not None:
-        worker_kwargs["max_concurrent_workflow_tasks"] = (
-            current_settings.MAX_CONCURRENT_WORKFLOW_TASKS
-        )
+        worker_kwargs[
+            "max_concurrent_workflow_tasks"
+        ] = current_settings.MAX_CONCURRENT_WORKFLOW_TASKS
     if current_settings.MAX_CACHED_WORKFLOWS is not None:
         worker_kwargs["max_cached_workflows"] = current_settings.MAX_CACHED_WORKFLOWS
     return Worker(**worker_kwargs)

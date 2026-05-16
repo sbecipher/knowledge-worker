@@ -2,10 +2,15 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 # Import our activity, passing it through workflow.imported()
 with workflow.unsafe.imports_passed_through():
-    from app.activities.loading import update_knowledge_index
+    from app.activities.company_metadata import fetch_company_metadata
+    from app.activities.loading import (
+        update_company_metadata_index,
+        update_knowledge_index,
+    )
     from app.activities.orchestration import (
         discover_documents_for_ticker,
         discover_edgar_documents,
@@ -25,52 +30,64 @@ class KnowledgeCompanyWorkflow:
     """
 
     @workflow.run
-    async def run(self, company: CompanyPayload, year: int) -> dict:
+    async def run(
+        self, company: CompanyPayload, year: int, source: str | None = None
+    ) -> dict:
         workflow.logger.info(
-            f"Starting company workflow for {company.company_ticker} for year {year}"
+            f"Starting company workflow for {company.company_ticker} for year {year} source={source}"
         )
 
         import asyncio
+
+        requested_sources = _requested_company_sources(source)
+        if requested_sources == ("metadata",):
+            return await self._run_company_metadata(company, year)
+
         # Step 1: Discover documents via KnowledgeIO API and SEC EDGAR
-        knowledge_io_future = workflow.execute_activity(
-            discover_documents_for_ticker,
-            args=[company, year],
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=RetryPolicy(
-                initial_interval=timedelta(seconds=10),
-                maximum_interval=timedelta(seconds=60),
-                maximum_attempts=3,
-            ),
+        discovery_futures = []
+        for requested_source in requested_sources:
+            activity_fn = (
+                discover_documents_for_ticker
+                if requested_source == "articles"
+                else discover_edgar_documents
+            )
+            future = workflow.execute_activity(
+                activity_fn,
+                args=[company, year],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=10),
+                    maximum_interval=timedelta(seconds=60),
+                    maximum_attempts=3,
+                ),
+            )
+            discovery_futures.append((requested_source, future))
+
+        results = await asyncio.gather(
+            *[future for _, future in discovery_futures],
+            return_exceptions=True,
         )
-        
-        edgar_future = workflow.execute_activity(
-            discover_edgar_documents,
-            args=[company, year],
-            start_to_close_timeout=timedelta(minutes=5),
-            retry_policy=RetryPolicy(
-                initial_interval=timedelta(seconds=10),
-                maximum_interval=timedelta(seconds=60),
-                maximum_attempts=3,
-            ),
-        )
-        
-        # Wait for both discoveries
-        knowledge_io_docs, edgar_docs = await asyncio.gather(
-            knowledge_io_future, 
-            edgar_future,
-            return_exceptions=True
-        )
-        
+
         discovered_docs = []
-        if not isinstance(knowledge_io_docs, Exception) and knowledge_io_docs:
-            discovered_docs.extend(knowledge_io_docs)
-        else:
-            workflow.logger.error(f"Failed to fetch KnowledgeIO docs: {knowledge_io_docs}")
-            
-        if not isinstance(edgar_docs, Exception) and edgar_docs:
-            discovered_docs.extend(edgar_docs)
-        else:
-            workflow.logger.error(f"Failed to fetch EDGAR docs: {edgar_docs}")
+        source_errors: dict[str, str] = {}
+        for (requested_source, _), result in zip(discovery_futures, results):
+            if isinstance(result, Exception):
+                workflow.logger.error(
+                    "Failed to fetch %s docs: %s",
+                    requested_source,
+                    result,
+                )
+                source_errors[requested_source] = str(result)
+                continue
+            if result:
+                discovered_docs.extend(result)
+
+        _raise_if_discovery_failed_without_results(
+            company.company_ticker,
+            requested_sources,
+            source_errors,
+            discovered_docs_count=len(discovered_docs),
+        )
 
         if not discovered_docs:
             workflow.logger.info(
@@ -78,6 +95,7 @@ class KnowledgeCompanyWorkflow:
             )
             return {
                 "company": company.company_ticker,
+                "source": source,
                 "discovered": 0,
                 "ingested": 0,
                 "message": "No documents found.",
@@ -100,6 +118,7 @@ class KnowledgeCompanyWorkflow:
             )
             return {
                 "company": company.company_ticker,
+                "source": source,
                 "discovered": len(discovered_docs),
                 "ingested": 0,
                 "message": "All documents already ingested.",
@@ -108,8 +127,6 @@ class KnowledgeCompanyWorkflow:
         workflow.logger.info(
             f"Found {len(new_docs)} new documents to ingest for {company.company_ticker}"
         )
-
-        import asyncio
 
         # Step 3: Spawn child workflows for each new document
         # We process them concurrently for speed.
@@ -134,13 +151,18 @@ class KnowledgeCompanyWorkflow:
 
         # Collect successful results that have a stage URI
         successful_results = [
-            r for r in results
-            if not isinstance(r, Exception) and r and r.get("success") and not r.get("skipped")
+            r
+            for r in results
+            if not isinstance(r, Exception)
+            and r
+            and r.get("success")
+            and not r.get("skipped")
         ]
 
         # Count Gate 2 skips (passed GCS filter but already in BQ)
         skipped_results = [
-            r for r in results
+            r
+            for r in results
             if not isinstance(r, Exception) and r and r.get("skipped")
         ]
 
@@ -197,9 +219,103 @@ class KnowledgeCompanyWorkflow:
 
         return {
             "company": company.company_ticker,
+            "source": source,
             "discovered": len(discovered_docs),
             "processed": len(successful_results),
             "skipped": len(skipped_results),
             "promoted": promoted_count,
+            "source_errors": source_errors,
             "message": "Ingestion completed.",
         }
+
+    async def _run_company_metadata(self, company: CompanyPayload, year: int) -> dict:
+        metadata_result = await workflow.execute_activity(
+            fetch_company_metadata,
+            args=[company, year, "lseg"],
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=10),
+                maximum_interval=timedelta(seconds=60),
+                maximum_attempts=3,
+            ),
+        )
+
+        if metadata_result is None:
+            workflow.logger.info(
+                "No company metadata discovered for %s in %s",
+                company.company_ticker,
+                year,
+            )
+            return {
+                "company": company.company_ticker,
+                "source": "metadata",
+                "discovered": 0,
+                "processed": 0,
+                "promoted": 0,
+                "message": "No company metadata found.",
+            }
+
+        await workflow.execute_activity(
+            update_company_metadata_index,
+            metadata_result.stage_gcs_uri,
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=5),
+                maximum_interval=timedelta(seconds=60),
+                maximum_attempts=3,
+            ),
+        )
+        prod_gcs_uri = await workflow.execute_activity(
+            promote_to_prod,
+            metadata_result.stage_gcs_uri,
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=5),
+                maximum_interval=timedelta(seconds=30),
+                maximum_attempts=3,
+            ),
+        )
+        return {
+            "company": company.company_ticker,
+            "source": "metadata",
+            "provider": metadata_result.provider,
+            "discovered": 1,
+            "processed": 1,
+            "promoted": 1,
+            "metadata_id": metadata_result.metadata_id,
+            "prod_gcs_uri": prod_gcs_uri,
+            "message": "Company metadata ingestion completed.",
+        }
+
+
+SUPPORTED_COMPANY_SOURCES = frozenset({"articles", "edgar", "metadata"})
+
+
+def _requested_company_sources(source: str | None) -> tuple[str, ...]:
+    if source is None:
+        return ("articles", "edgar")
+    normalized_source = source.strip().lower()
+    if normalized_source not in SUPPORTED_COMPANY_SOURCES:
+        raise ApplicationError(
+            f"Unsupported company source: {source}",
+            non_retryable=True,
+        )
+    return (normalized_source,)
+
+
+def _raise_if_discovery_failed_without_results(
+    company_ticker: str,
+    requested_sources: tuple[str, ...],
+    source_errors: dict[str, str],
+    discovered_docs_count: int,
+) -> None:
+    if discovered_docs_count > 0 or not source_errors:
+        return
+    error_details = "; ".join(
+        f"{requested_source}: {source_errors[requested_source]}"
+        for requested_source in requested_sources
+        if requested_source in source_errors
+    )
+    raise ApplicationError(
+        f"Document discovery failed for {company_ticker}: {error_details}",
+    )

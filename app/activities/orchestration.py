@@ -151,10 +151,14 @@ async def discover_edgar_documents(
                     f"No EDGAR documents found for {company.company_ticker} in year {year}"
                 )
                 return []
-            logger.error(f"Error fetching EDGAR documents for {company.company_ticker}: {e}")
+            logger.error(
+                f"Error fetching EDGAR documents for {company.company_ticker}: {e}"
+            )
             raise e
         except Exception as e:
-            logger.error(f"Error fetching EDGAR documents for {company.company_ticker}: {e}")
+            logger.error(
+                f"Error fetching EDGAR documents for {company.company_ticker}: {e}"
+            )
             raise e
 
     documents = []
@@ -180,12 +184,14 @@ async def discover_edgar_documents(
         except Exception as e:
             logger.warning(f"Skipping invalid EDGAR document record: {e}")
 
-    logger.info(f"Discovered {len(documents)} EDGAR documents for {company.company_ticker}")
+    logger.info(
+        f"Discovered {len(documents)} EDGAR documents for {company.company_ticker}"
+    )
     return documents
 
 
 @activity.defn
-async def filter_existing_documents(
+def filter_existing_documents(
     documents: List[KnowledgeDocument], year: int
 ) -> List[KnowledgeDocument]:
     """
@@ -200,7 +206,6 @@ async def filter_existing_documents(
 
     logger.info(f"Checking existing documents in gs://{bucket_name}/{prefix}")
 
-    # We use sync GCS client since activity executes in thread pool
     client = storage.Client(project=settings.PROJECT_ID)
     bucket = client.bucket(bucket_name)
 
