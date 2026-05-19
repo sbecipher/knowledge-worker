@@ -4,12 +4,19 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from app.models.payloads import KnowledgeDocument
-    from app.activities.ingestion import download_document_to_gcs
+    from app.activities.ingestion import (
+        download_document_to_gcs,
+        relocate_edgar_source_to_gcs_layout,
+    )
     from app.activities.processing import (
         process_document_and_extract_features,
         _document_id,
     )
-    from app.activities.deduplication import check_document_exists_in_bq
+    from app.activities.deduplication import (
+        check_document_exists_in_bq,
+        check_edgar_document_exists_in_bq,
+    )
+    from app.utils.document_layout import is_edgar_document
 
 
 @workflow.defn
@@ -26,8 +33,13 @@ class KnowledgeIngestionWorkflow:
         doc_id = _document_id(document)
 
         # 0. Deduplication check in BigQuery
+        dedupe_activity = (
+            check_edgar_document_exists_in_bq
+            if is_edgar_document(document)
+            else check_document_exists_in_bq
+        )
         exists = await workflow.execute_activity(
-            check_document_exists_in_bq,
+            dedupe_activity,
             doc_id,
             start_to_close_timeout=timedelta(minutes=1),
             retry_policy=RetryPolicy(maximum_attempts=3),
@@ -56,6 +68,19 @@ class KnowledgeIngestionWorkflow:
                 ),
             )
 
+        if is_edgar_document(document):
+            source_gcs_uri = await workflow.execute_activity(
+                relocate_edgar_source_to_gcs_layout,
+                args=[document, source_gcs_uri],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=5),
+                    backoff_coefficient=2.0,
+                    maximum_interval=timedelta(minutes=1),
+                    maximum_attempts=3,
+                ),
+            )
+
         # 2. Process (Document AI, Gemini, Parquet to Stage GCS)
         record = await workflow.execute_activity(
             process_document_and_extract_features,
@@ -73,5 +98,8 @@ class KnowledgeIngestionWorkflow:
             "success": True,
             "document_id": record["document_id"],
             "prod_gcs_uri": record["prod_gcs_uri"],
+            "stage_gcs_uri": record["prod_gcs_uri"],
+            "source_kind": document.source_kind,
+            "source_gcs_uri": source_gcs_uri,
             "skipped": False,
         }

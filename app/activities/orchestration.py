@@ -9,6 +9,7 @@ from temporalio import activity
 from app.core.knowledge_api import knowledge_api_headers
 from app.models.payloads import CompanyPayload, KnowledgeDocument
 from app.core.config import settings
+from app.utils.document_layout import source_filename, source_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,8 @@ async def discover_documents_for_ticker(
         "base_url": company.base_url,
         "company_name": company.company_name,
         "company_ticker": company.company_ticker,
-        "company_id": "TBD",  # Will be resolved or we can generate a stub, wait let's look at the API requirements
+        "company_id": company.company_id,
     }
-
-    # Generate a company_id based on the ticker if not provided
-    payload["company_id"] = f"com_{company.company_ticker.lower()}"
 
     logger.info(
         f"Calling KnowledgeIO API to discover documents for {company.company_ticker} for year {year}"
@@ -105,6 +103,7 @@ async def discover_documents_for_ticker(
                 company_id=payload["company_id"],
                 year=year,
                 base_url=payload["base_url"],
+                source_kind="articles",
             )
             documents.append(doc)
         except Exception as e:
@@ -129,7 +128,7 @@ async def discover_edgar_documents(
         "base_url": company.base_url,
         "company_name": company.company_name,
         "company_ticker": company.company_ticker,
-        "company_id": f"com_{company.company_ticker.lower()}",
+        "company_id": company.company_id or f"com_{company.company_ticker.lower()}",
     }
 
     logger.info(
@@ -179,6 +178,13 @@ async def discover_edgar_documents(
                 company_id=payload["company_id"],
                 year=year,
                 base_url=payload["base_url"],
+                source_kind="edgar",
+                filing_type=item.get("filing_type") or item.get("form"),
+                filing_date=item.get("filing_date"),
+                report_date=item.get("report_date"),
+                accession_number=item.get("accession_number"),
+                primary_document=item.get("primary_document"),
+                cik=item.get("cik"),
             )
             documents.append(doc)
         except Exception as e:
@@ -200,30 +206,26 @@ def filter_existing_documents(
     if not documents:
         return []
 
-    ticker = documents[0].company_ticker
     bucket_name = settings.SOURCE_BUCKET
-    prefix = f"source/knowledge/{ticker}/{year}/"
-
-    logger.info(f"Checking existing documents in gs://{bucket_name}/{prefix}")
-
     client = storage.Client(project=settings.PROJECT_ID)
     bucket = client.bucket(bucket_name)
 
-    existing_blobs = list(bucket.list_blobs(prefix=prefix))
-
-    # Extract just the filenames from the existing blobs
-    existing_filenames = set()
-    for blob in existing_blobs:
-        # e.g. source/knowledge/AA/2026/article.html -> article.html
-        filename = blob.name.split("/")[-1]
-        existing_filenames.add(filename)
+    existing_filenames_by_prefix: dict[str, set[str]] = {}
+    for doc in documents:
+        prefix = source_prefix(doc)
+        if prefix in existing_filenames_by_prefix:
+            continue
+        logger.info(f"Checking existing documents in gs://{bucket_name}/{prefix}")
+        existing_blobs = list(bucket.list_blobs(prefix=prefix))
+        existing_filenames_by_prefix[prefix] = {
+            blob.name.split("/")[-1] for blob in existing_blobs
+        }
 
     new_documents = []
     for doc in documents:
-        # The document filepath usually looks like data/com_aa/2026/filename.ext
-        # Or we can just check the URL hash if that's what's used.
-        # Let's extract the actual filename we'd upload it as.
-        filename = doc.filepath.split("/")[-1]
+        prefix = source_prefix(doc)
+        filename = source_filename(doc)
+        existing_filenames = existing_filenames_by_prefix.get(prefix, set())
 
         if filename in existing_filenames:
             logger.info(f"Document {filename} already exists in GCS. Skipping.")
@@ -231,7 +233,5 @@ def filter_existing_documents(
 
         new_documents.append(doc)
 
-    logger.info(
-        f"Filtered {len(documents)} down to {len(new_documents)} new documents for {ticker}"
-    )
+    logger.info(f"Filtered {len(documents)} down to {len(new_documents)} new documents")
     return new_documents

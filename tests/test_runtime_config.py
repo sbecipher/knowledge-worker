@@ -11,6 +11,7 @@ from app.activities import loading
 from app.activities import orchestration
 from app.core.config import Settings
 from app.models.payloads import KnowledgeDocument
+from app.utils.document_layout import document_id
 from app import runtime
 
 
@@ -163,6 +164,67 @@ def test_filter_existing_documents_uses_configured_source_bucket(
     assert [document.title for document in result] == ["New"]
 
 
+def test_filter_existing_documents_uses_edgar_layout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = {}
+    existing_doc = KnowledgeDocument(
+        title="AA 10-K 2024",
+        company_name="Alcoa",
+        company_id="com_aa",
+        company_ticker="AA",
+        base_url="https://example.com",
+        year=2024,
+        date="2024-12-31",
+        url="https://www.sec.gov/Archives/edgar/data/1/aa-10k.htm",
+        type="html",
+        filepath="https://www.sec.gov/Archives/edgar/data/1/aa-10k.htm",
+        source_kind="edgar",
+        accession_number="0000000000-24-000001",
+        primary_document="aa-10k.htm",
+        cik="1",
+    )
+    new_doc = existing_doc.model_copy(
+        update={
+            "title": "AA 10-Q 2024",
+            "url": "https://www.sec.gov/Archives/edgar/data/1/aa-10q.htm",
+            "filepath": "https://www.sec.gov/Archives/edgar/data/1/aa-10q.htm",
+            "accession_number": "0000000000-24-000002",
+            "primary_document": "aa-10q.htm",
+        }
+    )
+
+    class FakeBlob:
+        def __init__(self, name: str):
+            self.name = name
+
+    class FakeBucket:
+        def list_blobs(self, prefix: str):
+            seen["prefix"] = prefix
+            return [FakeBlob(f"{prefix}{document_id(existing_doc)}.html")]
+
+    class FakeStorageClient:
+        def __init__(self, project: str):
+            seen["project"] = project
+
+        def bucket(self, bucket_name: str):
+            seen["bucket_name"] = bucket_name
+            return FakeBucket()
+
+    monkeypatch.setattr(orchestration.settings, "PROJECT_ID", "data-cipher")
+    monkeypatch.setattr(orchestration.settings, "SOURCE_BUCKET", "source-bucket")
+    monkeypatch.setattr(orchestration.storage, "Client", FakeStorageClient)
+
+    result = orchestration.filter_existing_documents([existing_doc, new_doc], 2024)
+
+    assert seen == {
+        "project": "data-cipher",
+        "bucket_name": "source-bucket",
+        "prefix": "source/edgar/AA/2024-12-31/",
+    }
+    assert [document.title for document in result] == ["AA 10-Q 2024"]
+
+
 def test_infer_document_type_from_article_item_flags() -> None:
     assert orchestration._infer_document_type({"is_pdf": True}) == "pdf"
     assert (
@@ -271,6 +333,35 @@ def test_update_knowledge_index_uses_configured_bq_project(
     }
 
 
+def test_update_edgar_index_uses_dedicated_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = {}
+
+    class FakeLoader:
+        def load_parquet(self, uri: str, table_id: str) -> bool:
+            seen["uri"] = uri
+            seen["table_id"] = table_id
+            seen["called"] = True
+            return True
+
+    monkeypatch.setattr(loading.settings, "BQ_PROJECT_ID", "sbecipherio")
+    monkeypatch.setattr(loading.settings, "BQ_DATASET", "knowledge")
+    monkeypatch.setattr(loading.settings, "BQ_EDGAR_TABLE", "edgar")
+    monkeypatch.setattr(loading, "get_bigquery_loader_backend", lambda: FakeLoader())
+
+    result = loading.update_edgar_index(
+        "gs://bucket/prod/edgar/v1/date=2024-12-31/doc.parquet"
+    )
+
+    assert result is True
+    assert seen == {
+        "uri": "gs://bucket/prod/edgar/v1/date=2024-12-31/doc.parquet",
+        "table_id": "sbecipherio.knowledge.edgar",
+        "called": True,
+    }
+
+
 def test_update_company_metadata_index_uses_dedicated_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -333,3 +424,36 @@ def test_check_document_exists_uses_bq_project(
     assert result is True
     assert seen["project"] == "sbecipherio"
     assert "`sbecipherio.knowledge.documents`" in seen["query"]
+
+
+def test_check_edgar_document_exists_uses_dedicated_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = {}
+
+    class FakeResults:
+        total_rows = 1
+
+    class FakeQueryJob:
+        def result(self):
+            return FakeResults()
+
+    class FakeBigQueryClient:
+        def __init__(self, project: str):
+            seen["project"] = project
+
+        def query(self, query: str, job_config):
+            seen["query"] = query
+            seen["job_config"] = job_config
+            return FakeQueryJob()
+
+    monkeypatch.setattr(deduplication.settings, "BQ_PROJECT_ID", "sbecipherio")
+    monkeypatch.setattr(deduplication.settings, "BQ_DATASET", "knowledge")
+    monkeypatch.setattr(deduplication.settings, "BQ_EDGAR_TABLE", "edgar")
+    monkeypatch.setattr(deduplication.bigquery, "Client", FakeBigQueryClient)
+
+    result = deduplication.check_edgar_document_exists_in_bq("doc-123")
+
+    assert result is True
+    assert seen["project"] == "sbecipherio"
+    assert "`sbecipherio.knowledge.edgar`" in seen["query"]

@@ -41,6 +41,34 @@ def test_local_storage_backend_promotes_stage_to_prod(tmp_path) -> None:
     )
 
 
+def test_local_storage_backend_promotes_edgar_stage_to_prod(tmp_path) -> None:
+    backend = LocalFilesystemStorageBackend(tmp_path)
+    stage_uri = backend.upload_bytes(
+        "integration-bucket",
+        "stage/edgar/v1/date=2024-12-31/doc.parquet",
+        b"edgar",
+        content_type="application/octet-stream",
+    )
+
+    prod_uri = backend.promote(stage_uri)
+
+    assert (
+        tmp_path
+        / "gcs"
+        / "integration-bucket"
+        / "prod/edgar/v1/date=2024-12-31/doc.parquet"
+    ).read_bytes() == b"edgar"
+    assert not (
+        tmp_path
+        / "gcs"
+        / "integration-bucket"
+        / "stage/edgar/v1/date=2024-12-31/doc.parquet"
+    ).exists()
+    assert prod_uri == (
+        "gs://integration-bucket/prod/edgar/v1/date=2024-12-31/doc.parquet"
+    )
+
+
 def test_local_bigquery_loader_records_rows(tmp_path) -> None:
     storage_backend = LocalFilesystemStorageBackend(tmp_path)
     dataframe = pd.DataFrame(

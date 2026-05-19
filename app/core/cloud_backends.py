@@ -39,6 +39,17 @@ def _local_blob_path(root: Path, bucket_name: str, blob_name: str) -> Path:
     return root / LOCAL_GCS_ROOT_DIRNAME / bucket_name / Path(blob_name)
 
 
+def prod_blob_name_for_stage(stage_blob_name: str) -> str:
+    replacements = (
+        ("stage/knowledge/", "prod/knowledge/"),
+        ("stage/edgar/v1/", "prod/edgar/v1/"),
+    )
+    for stage_prefix, prod_prefix in replacements:
+        if stage_blob_name.startswith(stage_prefix):
+            return stage_blob_name.replace(stage_prefix, prod_prefix, 1)
+    raise ValueError(f"Unsupported stage prefix for promotion: {stage_blob_name}")
+
+
 class StorageBackend(Protocol):
     def upload_bytes(
         self,
@@ -47,16 +58,13 @@ class StorageBackend(Protocol):
         payload: bytes,
         *,
         content_type: str | None = None,
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    def promote(self, stage_gcs_uri: str) -> str:
-        ...
+    def promote(self, stage_gcs_uri: str) -> str: ...
 
 
 class BigQueryLoaderBackend(Protocol):
-    def load_parquet(self, prod_gcs_uri: str, table_id: str) -> bool:
-        ...
+    def load_parquet(self, prod_gcs_uri: str, table_id: str) -> bool: ...
 
 
 class GoogleCloudStorageBackend:
@@ -76,15 +84,7 @@ class GoogleCloudStorageBackend:
 
     def promote(self, stage_gcs_uri: str) -> str:
         bucket_name, stage_blob_name = parse_gcs_uri(stage_gcs_uri)
-        prod_blob_name = stage_blob_name.replace(
-            "stage/knowledge/",
-            "prod/knowledge/",
-            1,
-        )
-        if prod_blob_name == stage_blob_name:
-            raise ValueError(
-                f"Stage URI does not contain 'stage/knowledge/' prefix: {stage_gcs_uri}"
-            )
+        prod_blob_name = prod_blob_name_for_stage(stage_blob_name)
 
         client = storage.Client(project=settings.PROJECT_ID)
         bucket = client.bucket(bucket_name)
@@ -117,15 +117,7 @@ class LocalFilesystemStorageBackend:
 
     def promote(self, stage_gcs_uri: str) -> str:
         bucket_name, stage_blob_name = parse_gcs_uri(stage_gcs_uri)
-        prod_blob_name = stage_blob_name.replace(
-            "stage/knowledge/",
-            "prod/knowledge/",
-            1,
-        )
-        if prod_blob_name == stage_blob_name:
-            raise ValueError(
-                f"Stage URI does not contain 'stage/knowledge/' prefix: {stage_gcs_uri}"
-            )
+        prod_blob_name = prod_blob_name_for_stage(stage_blob_name)
 
         source_path = _local_blob_path(self.root, bucket_name, stage_blob_name)
         dest_path = _local_blob_path(self.root, bucket_name, prod_blob_name)
@@ -145,6 +137,9 @@ class GoogleBigQueryLoaderBackend:
             autodetect=True,
             schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION],
         )
+        parquet_options = bigquery.ParquetOptions()
+        parquet_options.enable_list_inference = True
+        job_config.parquet_options = parquet_options
 
         load_job = client.load_table_from_uri(
             prod_gcs_uri,

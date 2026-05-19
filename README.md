@@ -9,9 +9,9 @@ This repository contains the Temporal worker service for the **KnowledgeFlow** e
 The main orchestrator (`client/` cloud function or equivalent) queues tasks onto the Temporal server. The production worker listens on `knowledge-cloud-run-task-queue`, accepts `KnowledgeCompanyWorkflow` starts from the client function, and executes child `KnowledgeIngestionWorkflow` runs on the same queue.
 
 The workflow runs three primary activities:
-1. **Ingestion**: Download the document via URL and store the raw file (PDF, HTML) in the source GCS bucket (`sbecipher-knowledge-source`).
-2. **Processing**: Read the raw document from GCS, extract the text content (using Document AI or raw decoding), and generate structured analytical features using Gemini 2.5 Flash via native **Structured Outputs**. Finally, save these features as a Parquet file in the production GCS bucket (`sbecipher-knowledge-prod`).
-3. **Loading**: Load the structured Parquet file from the production bucket into a BigQuery table (`knowledge.documents`) for downstream consumption.
+1. **Ingestion**: Download the document via URL and store the raw file (PDF, HTML) in the source GCS bucket. Articles use `source/knowledge/{ticker}/{year}/`; EDGAR filings use `source/edgar/{ticker}/{date}/`.
+2. **Processing**: Read the raw document from GCS and generate structured analytical features using Gemini 2.5 Flash via native **Structured Outputs**. Article Parquet stages under `stage/knowledge/`; EDGAR filing Parquet stages under `stage/edgar/v1/date={date}/`.
+3. **Loading**: Load the staged Parquet file into the correct BigQuery table, then promote the staged object to the matching production prefix. Articles target `knowledge.documents` and `prod/knowledge/`; EDGAR filings target `knowledge.edgar` and `prod/edgar/v1/date={date}/`.
 
 `KnowledgeCompanyWorkflow` also supports `source=metadata`, which calls the sibling `knowledgeio` API for company metadata, writes a dedicated Parquet artifact under `stage/knowledge/company_metadata/`, and loads it into `knowledge.company_metadata`.
 
@@ -38,6 +38,7 @@ The worker configuration is strictly driven by environment variables using Pydan
 | `PROD_BUCKET` | Processed Parquet GCS bucket | `sbecipher-intelligence` |
 | `BQ_DATASET` | Target BigQuery dataset | `knowledge` |
 | `BQ_TABLE` | Target BigQuery table | `documents` |
+| `BQ_EDGAR_TABLE` | Target BigQuery table for EDGAR filing document artifacts | `edgar` |
 | `BQ_COMPANY_METADATA_TABLE` | Target BigQuery table for company metadata artifacts | `company_metadata` |
 | `TEMPORAL_ADDRESS` | Network address for Temporal server | `localhost:7233` |
 | `TEMPORAL_TASK_QUEUE` | Temporal task queue polled by this worker | `knowledge-cloud-run-task-queue` |
@@ -85,7 +86,7 @@ docker run -p 8080:8080 -e TEMPORAL_ADDRESS=host.docker.internal:7233 knowledge-
 
 The worker is deployed via **GitHub Actions** as an always-on Cloud Run service. It is a completely decoupled service that connects to the Temporal server over the network. Cloud Scheduler invokes the separate `knowledge-client` Gen 2 function, and that client starts `KnowledgeCompanyWorkflow` executions on the task queue this service polls.
 
-Production deploys use an immutable Artifact Registry digest, managed automatically by the CI/CD pipeline. The deploy target project and the runtime data project are separate: deploy the Cloud Run service into `data-cipher`, but keep `RUNTIME_PROJECT_ID=sbecipherio` so BigQuery loads target `sbecipherio.knowledge.documents`.
+Production deploys use an immutable Artifact Registry digest, managed automatically by the CI/CD pipeline. The deploy target project and the runtime data project are separate: deploy the Cloud Run service into `data-cipher`, but keep `RUNTIME_PROJECT_ID=sbecipherio` so BigQuery loads target `sbecipherio.knowledge.documents`, `sbecipherio.knowledge.edgar`, and `sbecipherio.knowledge.company_metadata`.
 
 ```bash
 # Example manual deploy command (typically handled by GitHub Actions):

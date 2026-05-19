@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 @activity.defn
 def promote_to_prod(stage_gcs_uri: str) -> str:
     """
-    Promotes a processed Parquet file from stage/knowledge/ to prod/knowledge/.
+    Promotes a processed Parquet file from its stage prefix to the matching prod prefix.
     Copies the blob then deletes the stage copy.
 
     Returns the prod GCS URI.

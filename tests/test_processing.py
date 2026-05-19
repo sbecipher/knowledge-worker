@@ -226,7 +226,7 @@ def test_oversized_pdf_routing_uses_chunks_not_source_uri(
     assert generated_uris == chunk_uris
     assert features.summary == "merged"
     assert metadata["gemini_file_uri"] == "gs://source-bucket/source.pdf"
-    assert json.loads(metadata["gemini_chunk_uris"]) == chunk_uris
+    assert metadata["gemini_chunk_uris"] == chunk_uris
     assert metadata["gemini_chunk_count"] == 2
 
 
@@ -270,7 +270,7 @@ def test_small_pdf_uses_direct_source_uri(monkeypatch: pytest.MonkeyPatch) -> No
     assert features.summary == "direct"
     assert metadata == {
         "gemini_file_uri": "gs://source-bucket/source.pdf",
-        "gemini_chunk_uris": "[]",
+        "gemini_chunk_uris": [],
         "gemini_chunk_count": 0,
     }
 

@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     PROD_BUCKET: str = "sbecipher-intelligence"
     BQ_DATASET: str = "knowledge"
     BQ_TABLE: str = "documents"
+    BQ_EDGAR_TABLE: str = "edgar"
     BQ_COMPANY_METADATA_TABLE: str = "company_metadata"
     KNOWLEDGEIO_API_URL: str = "https://knowledgeio-875978034496.us-central1.run.app"
     KNOWLEDGEIO_API_AUDIENCE: str | None = (

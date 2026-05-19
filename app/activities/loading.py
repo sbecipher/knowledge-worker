@@ -30,6 +30,17 @@ def update_knowledge_index(prod_gcs_uri: str) -> bool:
 
 
 @activity.defn
+def update_edgar_index(prod_gcs_uri: str) -> bool:
+    """
+    Loads an EDGAR filing Parquet artifact into the dedicated knowledge.edgar table.
+    """
+    table_id = (
+        f"{settings.BQ_PROJECT_ID}.{settings.BQ_DATASET}.{settings.BQ_EDGAR_TABLE}"
+    )
+    return _load_parquet_into_table(prod_gcs_uri, table_id)
+
+
+@activity.defn
 def update_company_metadata_index(prod_gcs_uri: str) -> bool:
     """
     Loads a company metadata Parquet artifact into the dedicated BigQuery table.

@@ -44,6 +44,50 @@ class KnowledgeDocument(BaseModel):
     gcs_uri: str | None = Field(
         default=None, description="GCS URI where the document is stored"
     )
+    source_kind: str = Field(
+        default="articles",
+        description="Logical source family, e.g. articles or edgar",
+    )
+    filing_type: str | None = Field(
+        default=None, description="SEC filing form type, e.g. 10-K or 10-Q"
+    )
+    filing_date: str | None = Field(
+        default=None, description="SEC filing date when available"
+    )
+    report_date: str | None = Field(
+        default=None, description="SEC report date when available"
+    )
+    accession_number: str | None = Field(
+        default=None, description="SEC accession number when available"
+    )
+    primary_document: str | None = Field(
+        default=None, description="SEC primary document filename when available"
+    )
+    cik: str | None = Field(default=None, description="SEC CIK when available")
+
+    @model_validator(mode="after")
+    def normalize_document(self) -> "KnowledgeDocument":
+        self.company_ticker = self.company_ticker.strip().upper()
+        self.company_id = self.company_id.strip()
+        self.type = self.type.strip().lower()
+        self.source_kind = (self.source_kind or "articles").strip().lower()
+        for field_name in (
+            "filing_type",
+            "filing_date",
+            "report_date",
+            "accession_number",
+            "primary_document",
+            "cik",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, str):
+                stripped = value.strip()
+                setattr(self, field_name, stripped or None)
+        if self.filing_type:
+            self.filing_type = self.filing_type.upper()
+        if self.cik and self.cik.isdigit():
+            self.cik = self.cik.zfill(10)
+        return self
 
 
 class CompanyMetadataArtifact(BaseModel):

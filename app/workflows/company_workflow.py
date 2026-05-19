@@ -9,6 +9,7 @@ with workflow.unsafe.imports_passed_through():
     from app.activities.company_metadata import fetch_company_metadata
     from app.activities.loading import (
         update_company_metadata_index,
+        update_edgar_index,
         update_knowledge_index,
     )
     from app.activities.orchestration import (
@@ -134,7 +135,8 @@ class KnowledgeCompanyWorkflow:
         for doc in new_docs:
             filename = doc.filepath.split("/")[-1]
             workflow_id = (
-                f"knowledge-ingestion-{company.company_ticker}-{year}-{filename}"
+                f"knowledge-ingestion-{company.company_ticker}-{year}-"
+                f"{doc.source_kind}-{filename}"
             )
 
             # Create coroutine for child workflow execution
@@ -175,17 +177,22 @@ class KnowledgeCompanyWorkflow:
         # Step 4: Batch BQ load and stage → prod promotion
         promoted_count = 0
         for result in successful_results:
-            stage_uri = result.get("prod_gcs_uri")
+            stage_uri = result.get("stage_gcs_uri") or result.get("prod_gcs_uri")
             if not stage_uri:
                 workflow.logger.warning(
                     f"No stage URI for document {result.get('document_id')}. Skipping load & promotion."
                 )
                 continue
+            load_activity = (
+                update_edgar_index
+                if result.get("source_kind") == "edgar"
+                else update_knowledge_index
+            )
 
             try:
                 # Load Parquet into BigQuery
                 await workflow.execute_activity(
-                    update_knowledge_index,
+                    load_activity,
                     stage_uri,
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=RetryPolicy(

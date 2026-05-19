@@ -1,13 +1,14 @@
 import logging
-import hashlib
 import json
 import io
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Sequence
 
 import pandas as pd  # type: ignore
+import pyarrow as pa  # type: ignore
+import pyarrow.parquet as pq  # type: ignore
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 from google.cloud import storage  # type: ignore
@@ -17,6 +18,12 @@ from pypdf import PdfReader, PdfWriter
 
 from app.models.payloads import KnowledgeDocument
 from app.core.config import settings
+from app.utils.document_layout import (
+    document_id,
+    document_partition_date,
+    is_edgar_document,
+    stage_blob_name as build_stage_blob_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +65,28 @@ TRANSIENT_TERMS = (
     "TIMEOUT",
     "TIMED OUT",
 )
+PARQUET_STRING_COLUMNS = {
+    "document_id",
+    "company_id",
+    "company_ticker",
+    "title",
+    "source_url",
+    "source_gcs_uri",
+    "gemini_file_uri",
+    "document_type",
+    "standard_features",
+    "source_kind",
+    "filing_type",
+    "filing_date",
+    "report_date",
+    "accession_number",
+    "primary_document",
+    "cik",
+}
 
 
 def _document_id(doc: KnowledgeDocument) -> str:
-    stable_hash = hashlib.md5(doc.title.encode()).hexdigest()[:16]
-    return f"{doc.company_id}_{doc.year}_{stable_hash}"
+    return document_id(doc)
 
 
 def _mime_type(doc: KnowledgeDocument) -> str:
@@ -306,7 +330,7 @@ def _merge_chunk_features(
 def _direct_metadata(source_gcs_uri: str) -> dict[str, Any]:
     return {
         "gemini_file_uri": source_gcs_uri,
-        "gemini_chunk_uris": "[]",
+        "gemini_chunk_uris": [],
         "gemini_chunk_count": 0,
     }
 
@@ -314,9 +338,43 @@ def _direct_metadata(source_gcs_uri: str) -> dict[str, Any]:
 def _chunk_metadata(source_gcs_uri: str, chunk_uris: Sequence[str]) -> dict[str, Any]:
     return {
         "gemini_file_uri": source_gcs_uri,
-        "gemini_chunk_uris": json.dumps(list(chunk_uris)),
+        "gemini_chunk_uris": list(chunk_uris),
         "gemini_chunk_count": len(chunk_uris),
     }
+
+
+def _document_date(doc: KnowledgeDocument) -> date:
+    return date.fromisoformat(document_partition_date(doc))
+
+
+def _edgar_metadata(doc: KnowledgeDocument) -> dict[str, Any]:
+    if not is_edgar_document(doc):
+        return {}
+    return {
+        "source_kind": doc.source_kind,
+        "filing_type": doc.filing_type,
+        "filing_date": doc.filing_date,
+        "report_date": doc.report_date,
+        "accession_number": doc.accession_number,
+        "primary_document": doc.primary_document,
+        "cik": doc.cik,
+    }
+
+
+def _parquet_bytes(dataframe: pd.DataFrame) -> bytes:
+    for column in PARQUET_STRING_COLUMNS.intersection(dataframe.columns):
+        dataframe[column] = dataframe[column].astype("string")
+    table = pa.Table.from_pandas(dataframe, preserve_index=False)
+    if "gemini_chunk_uris" in dataframe.columns:
+        chunk_uris = pa.array(
+            dataframe["gemini_chunk_uris"].tolist(),
+            type=pa.list_(pa.string()),
+        )
+        column_index = table.schema.get_field_index("gemini_chunk_uris")
+        table = table.set_column(column_index, "gemini_chunk_uris", chunk_uris)
+    parquet_buffer = io.BytesIO()
+    pq.write_table(table, parquet_buffer)
+    return parquet_buffer.getvalue()
 
 
 def _extract_oversized_pdf_features(
@@ -435,22 +493,22 @@ def process_document_and_extract_features(
         "document_type": doc.type,
         "standard_features": validated_features.model_dump_json(),
         "ingestion_timestamp": datetime.now(timezone.utc),
+        "date": _document_date(doc),
     }
     record.update(gemini_metadata)
+    record.update(_edgar_metadata(doc))
 
     df = pd.DataFrame([record])
     # Cast to microsecond resolution for BigQuery compatibility
     df["ingestion_timestamp"] = df["ingestion_timestamp"].astype("datetime64[us, UTC]")
-
-    parquet_buffer = io.BytesIO()
-    df.to_parquet(parquet_buffer, index=False)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
 
     stage_bucket = client.bucket(settings.PROD_BUCKET)
-    stage_blob_name = f"stage/knowledge/{doc_id}.parquet"
+    stage_blob_name = build_stage_blob_name(doc, doc_id)
 
     stage_blob = stage_bucket.blob(stage_blob_name)
     stage_blob.upload_from_string(
-        parquet_buffer.getvalue(), content_type="application/octet-stream"
+        _parquet_bytes(df), content_type="application/octet-stream"
     )
 
     stage_gcs_uri = f"gs://{settings.PROD_BUCKET}/{stage_blob_name}"
